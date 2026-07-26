@@ -1096,7 +1096,7 @@ export default function App() {
             </p>
             <p className="about-me">
               Built by Jeff Lin. {/* TODO(jeff): add a sentence or two about yourself and why you made this */}
-              Questions, corrections, or removal requests: see the FAQ below.
+              Questions or corrections: see the FAQ below.
             </p>
             {DONATE_URL && (
               <a className="donate" href={DONATE_URL} target="_blank" rel="noreferrer">
