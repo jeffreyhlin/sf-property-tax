@@ -1,0 +1,14 @@
+{
+  "name": "sf-property-tax-records-worker",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "On-demand SF Recorder public-index lookup behind the app's RECORDS_API hook (pure HTTP, no browser)",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node records-worker.mjs",
+    "seed": "node seed-cache.mjs"
+  }
+}

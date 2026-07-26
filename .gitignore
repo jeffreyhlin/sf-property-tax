@@ -1,0 +1,39 @@
+node_modules/
+dist/
+
+# Raw source data. Both of these exceed GitHub's 100MB per-file hard limit
+# (roll.csv is 612MB, parcels.geojson is 140MB). Re-fetch with pipeline/fetch.py.
+data/raw/roll.csv
+data/raw/parcels.geojson
+
+# Licensed third-party data. The Regrid data store license forbids reselling,
+# sublicensing, or "otherwise mak[ing] the Data available to third parties",
+# so the sample export stays out of version control. The license summary itself
+# is our own notes on public terms and is tracked.
+data/raw/regrid_sf_sample_20rows.csv
+
+# Runtime state and logs
+data/logs/
+data/watch_state/
+
+# Worker debug artifacts
+worker/last-error.png
+worker/last-error.txt
+worker/last-result.txt
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# NOTE: web/public/data/ (274MB derived map data) and worker/cache/ (recorded
+# deed lookups) are intentionally TRACKED so a fresh clone runs without
+# re-running the pipeline or re-querying the county. The cache contains
+# grantor/grantee names, all of which are public county records.
+
+# Street-watch subscribers. This is a list of real email addresses, so it stays
+# out of version control. Copy watches.example.json to watches.json to use it.
+pipeline/watches.json

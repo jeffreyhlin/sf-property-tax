@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>The tax gap under every SF home</title>
+<style>
+  /* ============================================================
+     One integrated story. No tabs, no rail. Scroll ghosts the text
+     in and out over a live map. Breakdown chapters live inside the
+     narrative. The end releases you into the map for good.
+
+     Copy follows petergyang/no-ai-slop: no binary contrasts, no
+     colon reveals, no dramatic fragments, no closing aphorism,
+     concrete numbers, active voice, em dashes avoided.
+     ============================================================ */
+  * { margin:0; padding:0; box-sizing:border-box; }
+  :root {
+    --paper:#f7f3ea; --panel:#fffdf8; --ink:#2c2418; --ink-soft:#5c5344;
+    --accent:#b25007; --line:#e7dfcd;
+  }
+  html { scroll-behavior:smooth; }
+  body { font:16px/1.62 -apple-system,"Helvetica Neue",Segoe UI,sans-serif;
+    color:var(--ink); background:var(--paper); -webkit-text-size-adjust:100%; }
+
+  /* ---- map layer ---- */
+  .map { position:fixed; inset:0; z-index:0;
+    background:
+      radial-gradient(1000px 600px at 68% 40%, #f0c98f66, transparent 60%),
+      radial-gradient(700px 500px at 30% 65%, #b2500722, transparent 60%),
+      var(--paper);
+    transition: filter 900ms ease; }
+  .map::before { content:""; position:absolute; inset:0;
+    background-image: repeating-linear-gradient(90deg,#2c241809 0 1px,transparent 1px 46px),
+                      repeating-linear-gradient(0deg,#2c241809 0 1px,transparent 1px 34px); }
+  .blob { position:absolute; border-radius:3px; }
+  body.reading .map { filter:saturate(.55) brightness(1.04); }
+  body.released .map { filter:none; }
+
+  /* ---- unified scrim, no cards or outlines ---- */
+  .scrim { position:fixed; inset:0; z-index:1; pointer-events:none; opacity:1;
+    transition:opacity 900ms ease;
+    background: radial-gradient(58vw 68vh at 32% 50%, var(--paper) 34%, #f7f3eacc 58%, #f7f3ea00 78%); }
+  body.released .scrim { opacity:0; }
+
+  /* ---- steps: fade, almost no travel ---- */
+  .steps { position:relative; z-index:2; }
+  .step { height:130vh; }
+  .step .text { position:fixed; top:50%; left:8vw; width:min(34rem,44vw);
+    transform:translateY(-50%); opacity:0; pointer-events:none; filter:blur(6px);
+    transition:opacity 700ms ease, transform 700ms ease, filter 700ms ease; }
+  .step.active .text { opacity:1; pointer-events:auto; filter:blur(0); }
+  .step.leaving .text { opacity:0; filter:blur(4px); transform:translateY(calc(-50% - 10px)); }
+  .step .text p { margin:0 0 1em; color:var(--ink-soft); }
+  .step .text p strong { color:var(--ink); font-weight:650; }
+  .kicker { font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); font-weight:700; margin-bottom:10px; }
+  h1 { font-size:clamp(30px,5.2vw,44px); line-height:1.08; letter-spacing:-.01em; margin-bottom:16px; }
+  h2 { font-size:clamp(21px,3vw,27px); line-height:1.16; margin-bottom:12px; }
+  .big { font-size:clamp(38px,6vw,56px); font-weight:800; color:var(--accent);
+    letter-spacing:-.02em; line-height:1; }
+  .big small { font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:0; }
+
+  /* ---- breakdown chapter, inline in the prose ---- */
+  .bars { display:flex; flex-direction:column; gap:8px; margin:18px 0 6px; }
+  .bar { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--ink-soft); }
+  .bar i { height:16px; border-radius:2px; background:var(--accent); display:block;
+    transform-origin:left; transform:scaleX(0);
+    transition:transform 900ms cubic-bezier(.2,.7,.2,1) 150ms; }
+  .step.active .bar i { transform:scaleX(1); }
+  .bar.b2 i { background:#d98a4b; } .bar.b3 i { background:#ecc79a; }
+  .bar b { color:var(--ink); font-weight:700; min-width:52px; text-align:right; }
+
+  /* ---- skip: inline under the copy, where the eye already is ---- */
+  .skiplink { display:inline-flex; align-items:center; gap:7px; margin-top:2px;
+    padding:11px 0; min-height:44px; font:inherit; font-size:14.5px; font-weight:600;
+    color:var(--accent); background:none; border:0; cursor:pointer;
+    transition:gap .2s ease, opacity .2s ease; opacity:.9; }
+  .skiplink:hover { opacity:1; gap:11px; }
+  .skiplink .arr { transition:transform .2s ease; }
+  .skiplink:hover .arr { transform:translateY(2px); }
+  .progress { position:fixed; left:0; top:0; height:2px; background:var(--accent); z-index:6; width:0; }
+
+  /* ---- post-release dock, the only chrome ---- */
+  .dock { position:fixed; left:50%; bottom:0; z-index:5;
+    transform:translate(-50%,90px); opacity:0;
+    margin-bottom:max(18px, env(safe-area-inset-bottom));
+    display:flex; gap:5px; align-items:center; background:#fffdf8f2;
+    border:1px solid var(--line); border-radius:999px; padding:6px 8px;
+    box-shadow:0 6px 24px #2c241814; backdrop-filter:blur(6px);
+    transition:transform 600ms ease, opacity 600ms ease; }
+  body.released .dock { transform:translate(-50%,0); opacity:1; }
+  .dock button { font:inherit; font-size:13px; border:0; background:transparent;
+    color:var(--ink-soft); padding:10px 13px; border-radius:999px; cursor:pointer; min-height:44px; }
+  .dock button:hover { background:#f3ecdc; color:var(--ink); }
+  .dock .primary { background:var(--accent); color:#fff; font-weight:650; }
+  .dock .primary:hover { background:#9a4506; color:#fff; }
+  .dock .divider { width:1px; height:18px; background:var(--line); }
+  .audio-label { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+  .audio-dot { width:7px; height:7px; border-radius:50%; background:#cdc3ad; }
+  .audio-on .audio-dot { background:var(--accent); animation:pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity:.4; } }
+
+  .hint { position:fixed; z-index:4; right:22px; font-size:12.5px; color:var(--ink-soft);
+    bottom:calc(78px + env(safe-area-inset-bottom));
+    background:#fffdf8e8; border:1px solid var(--line); border-radius:9px;
+    padding:10px 12px; max-width:230px; opacity:0; transition:opacity 600ms ease 400ms; }
+  body.released .hint { opacity:1; }
+
+  /* ============ MOBILE ============ */
+  @media (max-width:760px) {
+    body { font-size:16px; }
+    .step { height:118vh; }
+    .step .text { left:6vw; width:88vw; top:46%; }
+    .scrim { background: radial-gradient(96vw 62vh at 50% 44%, var(--paper) 32%, #f7f3eadd 62%, #f7f3ea00 84%); }
+    .dock { width:calc(100vw - 20px); justify-content:center; flex-wrap:wrap;
+      border-radius:16px; padding:7px; }
+    .dock button { padding:10px 11px; font-size:12.5px; }
+    .dock .divider { display:none; }
+    .hint { left:10px; right:10px; max-width:none;
+      bottom:calc(104px + env(safe-area-inset-bottom)); }
+    .bar { font-size:12.5px; gap:8px; }
+    .bar b { min-width:46px; }
+  }
+</style>
+</head>
+<body class="reading">
+
+  <div class="map" id="map"></div>
+  <div class="scrim"></div>
+  <div class="progress" id="progress"></div>
+
+  <div class="steps" id="steps">
+
+    <section class="step" data-audio="San Francisco collects about two billion dollars a year less in property tax than it would if every home were taxed at what it is worth today. This is a map of every parcel in the city, and of who pays what.">
+      <div class="text">
+        <div class="kicker">SF Property Tax Gap</div>
+        <h1>$2 billion a year, and a map of who keeps it</h1>
+        <p>San Francisco taxes its homes as if they were worth
+        <strong>$2.0 billion less</strong> than this model estimates they are.
+        The law works that way on purpose, and the effect falls unevenly across
+        the city.</p>
+        <button class="skiplink js-skip">Skip to the map <span class="arr">↓</span></button>
+      </div>
+    </section>
+
+    <section class="step" data-audio="In 1978, Proposition 13 froze each property's taxable value at its purchase price, letting it rise no more than two percent a year regardless of the market.">
+      <div class="text">
+        <div class="kicker">How it works</div>
+        <h2>The 1978 freeze</h2>
+        <p>Prop 13 fixes a home's <strong>taxable value at its purchase price</strong>
+        and lets it rise no more than 2% a year. Market prices ignore that ceiling.</p>
+        <p>Hold a home for thirty years and the difference between your bill and a
+        new buyer's bill grows very large.</p>
+        <button class="skiplink js-skip">Skip to the map <span class="arr">↓</span></button>
+      </div>
+    </section>
+
+    <section class="step" data-audio="The map behind this text colors every parcel by that gap. Deep orange means a home is taxed far below its estimated value. Pale means it sits close to market.">
+      <div class="text">
+        <div class="kicker">The map</div>
+        <h2>Reading the colors</h2>
+        <p><strong>Deep orange</strong> marks homes taxed far below their estimated
+        value. <strong>Pale</strong> marks homes close to market. The city turns
+        orange toward the west, where owners tend to stay for decades.</p>
+      </div>
+    </section>
+
+    <section class="step" data-audio="Three quarters of the two billion belongs to owners who have simply held their homes since before 2007. A much smaller share traces to transfers that changed hands without triggering a reassessment.">
+      <div class="text">
+        <div class="kicker">Where the $2B sits</div>
+        <h2>Most of it is people who never left</h2>
+        <div class="bars">
+          <div class="bar"><i style="width:75%"></i><b>$1.5B</b> held since before 2007</div>
+          <div class="bar b2"><i style="width:20%"></i><b>$0.4B</b> bought and held since</div>
+          <div class="bar b3"><i style="width:5%"></i><b>$0.1B</b> transfers with no reassessment</div>
+        </div>
+        <p style="margin-top:14px">Long ownership accounts for most of the gap.
+        The smaller slice covers homes that changed hands without a tax reset, and
+        those are the ones the county's recorded deeds can settle.</p>
+      </div>
+    </section>
+
+    <section class="step" data-audio="1905 Pacific Avenue pays about eighty thousand dollars a year less than a new buyer would. The county recorder shows why. In 2015 the property went from Theodore Rosenak to Max Rosenak, one month after Theodore bought it at market.">
+      <div class="text">
+        <div class="kicker">One house</div>
+        <h2>1905 Pacific Ave</h2>
+        <p class="big">$79,914<small> /yr less than a new buyer would owe</small></p>
+        <p style="margin-top:12px">Assessed at $247,000 against an estimated $7.0M.
+        The recorder shows a 2015 deed from <strong>Rosenak Theodore W to Rosenak
+        Max William</strong>, one month after Theodore bought the house at market.
+        The old basis carried forward to the son.</p>
+      </div>
+    </section>
+
+    <section class="step" data-audio="Names like these are public. Every deed recorded in San Francisco since 1990 is searchable, and this map reads them for the parcel you are looking at.">
+      <div class="text">
+        <div class="kicker">The records</div>
+        <h2>Every name is public</h2>
+        <p>California has published recorded deeds for decades. Grantor, grantee,
+        document type, and date all sit in the county index, and this map pulls
+        them for whichever parcel you open.</p>
+        <p>That turns a guess about <em>why</em> a home is taxed low into something
+        you can check.</p>
+      </div>
+    </section>
+
+    <section class="step" data-audio="Now it is yours. Search your address, tap your neighbors, and compare your street to any street in the city. Turn on the audio guide if you want narration while you explore.">
+      <div class="text">
+        <div class="kicker">Your turn</div>
+        <h1>Look up your own street</h1>
+        <p>Search an address, tap any parcel, and read two decades of its taxes
+        alongside every deed on record. The <strong>audio guide</strong> keeps
+        narrating while you explore.</p>
+        <p style="color:#8a8070;font-size:14px">Keep scrolling to open the map.</p>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="dock" id="dock">
+    <button class="primary" id="searchBtn">Search address</button>
+    <button id="compareBtn">Compare</button>
+    <div class="divider"></div>
+    <button id="audioBtn"><span class="audio-label"><span class="audio-dot"></span> Audio guide</span></button>
+    <div class="divider"></div>
+    <button id="restartBtn" title="Replay the story">↺</button>
+  </div>
+
+  <div class="hint">Tap a deep-orange parcel to see its tax history and every deed
+  on record, names included.</div>
+
+<script>
+  const steps = [...document.querySelectorAll('.step')];
+  const progress = document.getElementById('progress');
+  let released = false, audioOn = false, lastSpoken = -1;
+
+  function onScroll() {
+    const mid = scrollY + innerHeight * 0.5;
+    let active = 0;
+    steps.forEach((s,i) => { const t = s.offsetTop;
+      if (mid >= t && mid < t + s.offsetHeight) active = i; });
+    steps.forEach((s,i) => {
+      s.classList.toggle('active', i === active && !released);
+      s.classList.toggle('leaving', i < active);
+    });
+    progress.style.width = (100 * scrollY / (document.body.scrollHeight - innerHeight)) + '%';
+    const last = steps[steps.length-1];
+    if (!released && scrollY + innerHeight > last.offsetTop + last.offsetHeight * 0.72) release();
+    if (audioOn && !released && active !== lastSpoken) speak(active);
+  }
+
+  function release() {
+    released = true;
+    document.body.classList.remove('reading');
+    document.body.classList.add('released');
+    steps.forEach(s => s.classList.remove('active'));
+    speechSynthesis.cancel();
+    if (audioOn) setTimeout(() => say('The map is open. Tap any parcel to read its records.'), 700);
+  }
+
+  // inline skip lives in the first two beats and fades out with them
+  document.querySelectorAll('.js-skip').forEach(b =>
+    b.addEventListener('click', () => scrollTo({ top: document.body.scrollHeight, behavior:'smooth' })));
+
+  function say(t) { const u = new SpeechSynthesisUtterance(t); u.rate = .97; speechSynthesis.speak(u); }
+  function speak(i) { lastSpoken = i; speechSynthesis.cancel(); const t = steps[i]?.dataset.audio; if (t) say(t); }
+  document.getElementById('audioBtn').addEventListener('click', e => {
+    audioOn = !audioOn;
+    e.currentTarget.classList.toggle('audio-on', audioOn);
+    if (audioOn) say('Audio guide on. I will narrate as you explore.');
+    else speechSynthesis.cancel();
+  });
+  document.getElementById('restartBtn').addEventListener('click', () => {
+    released = false; lastSpoken = -1;
+    document.body.classList.add('reading'); document.body.classList.remove('released');
+    scrollTo({ top:0, behavior:'smooth' });
+  });
+  document.getElementById('searchBtn').addEventListener('click', () => alert('(mock) opens address search'));
+  document.getElementById('compareBtn').addEventListener('click', () => location.href = 'compare2.html');
+
+  addEventListener('scroll', onScroll, { passive:true });
+  addEventListener('resize', onScroll);
+  onScroll();
+
+  const map = document.getElementById('map');
+  const ramp = ['#b25007','#c96a1f','#d98a4b','#e8a35c','#f0c98f','#f5e3c0'];
+  const n = innerWidth < 760 ? 70 : 130;
+  for (let i=0;i<n;i++) {
+    const b = document.createElement('div'); b.className = 'blob';
+    b.style.cssText = `left:${Math.random()*100}%;top:${Math.random()*100}%;`
+      + `width:${10+Math.random()*38}px;height:${8+Math.random()*24}px;`
+      + `background:${ramp[Math.floor(Math.pow(Math.random(),1.6)*ramp.length)]};`
+      + `opacity:${.25+Math.random()*.5}`;
+    map.appendChild(b);
+  }
+</script>
+</body>
+</html>

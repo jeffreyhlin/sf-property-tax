@@ -1,0 +1,126 @@
+{
+ "generated": "2026-07-13",
+ "evalYears": [
+  2022,
+  2025
+ ],
+ "method": "Ground truth = post-reset assessed value for sale-triggered basis resets (2022-2025). Prediction = leave-one-out median $/sqft of the same (neighborhood, year, class) comps cell build.py uses (trailing 3-year reset window, MIN_COMPS re-applied after excluding the target parcel), times building area. Errors are (pred - truth) / truth; medianAPE = median absolute percentage error, medianError = median signed error (bias).",
+ "filters": {
+  "classes": [
+   "home",
+   "apartment"
+  ],
+  "minArea": 200,
+  "minAssessedAtReset": 100000,
+  "minComps": {
+   "sfh": 15,
+   "multi_small": 10,
+   "multi_large": 6
+  }
+ },
+ "overall": {
+  "n": 10970,
+  "medianAPE": 0.1791,
+  "medianError": -0.0394,
+  "eligible": 11035,
+  "coverage": 0.9941
+ },
+ "byClass": {
+  "sfh": {
+   "n": 5432,
+   "medianAPE": 0.1666,
+   "medianError": -0.0544,
+   "eligible": 5465,
+   "coverage": 0.994
+  },
+  "multi": {
+   "n": 5538,
+   "medianAPE": 0.1939,
+   "medianError": -0.0209,
+   "eligible": 5570,
+   "coverage": 0.9943
+  }
+ },
+ "byNeighborhoodTop10": [
+  {
+   "n": 1079,
+   "medianAPE": 0.177,
+   "medianError": -0.0691,
+   "name": "Sunset/Parkside",
+   "eligible": 1079,
+   "coverage": 1.0
+  },
+  {
+   "n": 814,
+   "medianAPE": 0.1626,
+   "medianError": -0.0495,
+   "name": "West of Twin Peaks",
+   "eligible": 816,
+   "coverage": 0.9975
+  },
+  {
+   "n": 641,
+   "medianAPE": 0.1818,
+   "medianError": -0.0465,
+   "name": "Mission",
+   "eligible": 641,
+   "coverage": 1.0
+  },
+  {
+   "n": 562,
+   "medianAPE": 0.1826,
+   "medianError": -0.0299,
+   "name": "Noe Valley",
+   "eligible": 562,
+   "coverage": 1.0
+  },
+  {
+   "n": 522,
+   "medianAPE": 0.198,
+   "medianError": -0.1022,
+   "name": "Outer Richmond",
+   "eligible": 522,
+   "coverage": 1.0
+  },
+  {
+   "n": 464,
+   "medianAPE": 0.1847,
+   "medianError": -0.0299,
+   "name": "Bernal Heights",
+   "eligible": 465,
+   "coverage": 0.9978
+  },
+  {
+   "n": 446,
+   "medianAPE": 0.2687,
+   "medianError": 0.1292,
+   "name": "Financial District/South Beach",
+   "eligible": 447,
+   "coverage": 0.9978
+  },
+  {
+   "n": 433,
+   "medianAPE": 0.1567,
+   "medianError": -0.0231,
+   "name": "Pacific Heights",
+   "eligible": 433,
+   "coverage": 1.0
+  },
+  {
+   "n": 416,
+   "medianAPE": 0.1687,
+   "medianError": 0.0396,
+   "name": "Potrero Hill",
+   "eligible": 417,
+   "coverage": 0.9976
+  },
+  {
+   "n": 408,
+   "medianAPE": 0.1437,
+   "medianError": -0.0492,
+   "name": "Excelsior",
+   "eligible": 409,
+   "coverage": 0.9976
+  }
+ ]
+}

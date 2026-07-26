@@ -1,0 +1,1896 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import DeckGL from '@deck.gl/react';
+import { GeoJsonLayer } from '@deck.gl/layers';
+import {
+  FlyToInterpolator,
+  WebMercatorViewport,
+  type MapViewState,
+  type PickingInfo,
+} from '@deck.gl/core';
+import { Map } from 'react-map-gl/maplibre';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import './App.css';
+import { FAQ } from './faq';
+import { SankeyView } from './SankeyView';
+// PMTiles overview layer (pipeline/tiles.py builds data/parcels.pmtiles) is staged
+// but not wired: MVTLayer needs a data source to activate tiling; see docs/proposals.md.
+// import { PMTilesLayer } from './pmtilesLayer';
+
+type ViewMode = 'explore' | 'story' | 'breakdown' | 'compare';
+
+// Minimal lucide-style line icons (stroke = currentColor, no fill).
+const ICON_PATHS: Record<string, string> = {
+  map: 'M9 6 3 4v14l6 2 6-2 6 2V6l-6-2-6 2zm0 0v14M15 4v14',
+  story: 'M4 5a2 2 0 0 1 2-2h6v16H6a2 2 0 0 0-2 2V5zm16 0a2 2 0 0 0-2-2h-6v16h6a2 2 0 0 1 2 2V5z',
+  breakdown: 'M4 5h5a4 4 0 0 1 4 4v10M4 12h6a4 4 0 0 0 4-4V5m0 14h6M4 19h4',
+  compare: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
+  info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01',
+  home: 'M3 10.5 12 3l9 7.5M5 9.5V20h14V9.5',
+  building: 'M4 21V4a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v17M15 21V9h4a1 1 0 0 1 1 1v11M8 7h2M8 11h2M8 15h2',
+  transfer: 'M7 4 3 8l4 4M3 8h13M17 20l4-4-4-4M21 16H8',
+  cube: 'M12 2 3 7v10l9 5 9-5V7l-9-5zM3 7l9 5 9-5M12 12v10',
+  play: 'M6 4l14 8-14 8V4z',
+  pause: 'M7 4h3v16H7zM14 4h3v16h-3z',
+};
+
+function Icon({ name, size = 18 }: { name: string; size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.9}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d={ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
+const BASEMAP = 'https://basemaps.cartocdn.com/gl/positron-nolabels-gl-style/style.json';
+const PARCEL_ZOOM = 13; // below this, show neighborhood bubbles instead of parcels
+
+// Set to your Ko-fi / GitHub Sponsors / Stripe payment link to show a Donate button.
+const DONATE_URL = '';
+
+// Backend that looks up a parcel's recorded documents by APN from the SF Recorder
+// public index and caches them (see worker/records-worker.mjs). The index is open
+// — no login, no CAPTCHA on search — so the worker retrieves the full record set
+// on demand, one parcel at a time, and caches it. Set VITE_RECORDS_API to point at
+// a deployed worker; empty string forces demo mode (sample rows, clearly labeled).
+const RECORDS_API =
+  import.meta.env.VITE_RECORDS_API ?? 'http://localhost:8788/records';
+
+type DeedRecord = {
+  date: string;        // recording date YYYY-MM-DD
+  docType: string;     // e.g. "DEED", "TRUST TRANSFER DEED", "DEED OF TRUST"
+  grantor?: string | null;  // (R) party/parties, joined
+  grantee?: string | null;  // (E) party/parties, joined
+  grantors?: string[];
+  grantees?: string[];
+  docNumber?: string;
+  kind?: 'market' | 'relational' | 'other'; // transfer classification from doc type
+  transferTax?: number | null; // $0 => exempt (family/trust); >0 => arm's-length
+};
+
+type RecordsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'done'; demo: boolean; records: DeedRecord[]; fetchedAt: string; miss?: boolean };
+
+// Demo fallback: turn our inferred transfer events into plausible deed rows so the
+// on-demand UX is demonstrable. Labeled as sample data, NOT real recorder output.
+function demoRecords(sel: ParcelProps): DeedRecord[] {
+  const kindToDoc: Record<string, { docType: string; tax: number | null }> = {
+    reset: { docType: 'Grant Deed', tax: 1 },
+    market: { docType: 'Grant Deed', tax: 1 },
+    excluded: { docType: 'Trust Transfer Deed', tax: 0 },
+    relational: { docType: 'Trust Transfer Deed', tax: 0 },
+    partial: { docType: 'Deed', tax: null },
+  };
+  return [...sel.events]
+    .reverse()
+    .map(([yr, kind]) => {
+      const d = kindToDoc[kind] ?? { docType: 'Deed', tax: null };
+      return { date: `${yr}-01-01`, docType: d.docType, transferTax: d.tax, grantor: '—', grantee: '—' };
+    });
+}
+
+const INITIAL_VIEW: MapViewState = {
+  longitude: -122.4425,
+  latitude: 37.758,
+  zoom: 11.6,
+  pitch: 42, // tilt so the extruded neighborhood model reads as 3D
+  bearing: 0,
+};
+
+type HistEntry = [number, number, number | null]; // [year, assessed, est market | null]
+
+type ParcelProps = {
+  id: string;
+  addr: string;
+  nbhd: string;
+  use: string;
+  cls: 'sfh' | 'multi' | 'commercial';
+  built: string | null;
+  units: number | null;
+  area: number | null;
+  assessed: number;
+  estMarket: number | null;
+  ratio: number | null;
+  taxEst: number;
+  savings: number | null;
+  basisYear: number | null;
+  saleDate: string | null;
+  transferType: 'none' | 'market' | 'relational' | 'partial';
+  transferYear: number | null;
+  avoidedSince: number | null;
+  events: [number, 'reset' | 'excluded' | 'partial'][];
+  periods: [number, number, 'initial' | 'market' | 'relational' | 'partial', number | null][];
+  street: string | null;
+  hist: HistEntry[];
+};
+
+type Feature = {
+  type: 'Feature';
+  geometry: { type: string; coordinates: unknown };
+  properties: ParcelProps;
+};
+
+type LeaderRow = {
+  id: string;
+  addr: string;
+  nbhd: string;
+  cls: 'sfh' | 'multi';
+  assessed: number;
+  estMarket: number;
+  savings: number;
+  basisYear: number | null;
+  transferType: string;
+  transferYear: number | null;
+  avoidedSince: number | null;
+};
+
+type Boards = Record<'sfh' | 'multi', { topSavings: LeaderRow[]; topRelational: LeaderRow[] }>;
+
+type Neighborhood = {
+  name: string;
+  slug: string;
+  center: [number, number] | null;
+  parcels: number;
+  transfers: number;
+  relational: number;
+  totalSavings: number;
+  relationalSavings: number;
+  savingsPerParcel: number;
+  medianRatio: number | null;
+  ppsfByYear: Record<string, number>;
+  savingsByYear: Record<string, number>;
+  trend5y: number | null;
+  trendYears: number | null;
+};
+
+type Chunk = { slug: string; name: string; count: number; bbox: [number, number, number, number] | null; bytes: number };
+
+type PropType = 'all' | 'sfh' | 'multi' | 'commercial';
+
+type NbTypeStat = {
+  parcels: number;
+  relational: number;
+  totalSavings: number;
+  savingsPerParcel: number;
+  savingsByYear: Record<string, number>;
+  parcelsByYear: Record<string, number>;
+};
+
+type NbFeatureProps = {
+  name: string;
+  slug: string;
+  center: [number, number] | null;
+  medianRatio: number | null;
+  trend5y: number | null;
+  byType: Record<PropType, NbTypeStat>;
+};
+
+type NbFeature = { type: 'Feature'; geometry: { type: string; coordinates: unknown }; properties: NbFeatureProps };
+
+const TYPE_LABEL: Record<PropType, string> = {
+  all: 'All property',
+  sfh: 'Single-family',
+  multi: 'Multi-family',
+  commercial: 'Commercial',
+};
+
+// annual est. savings for a neighborhood in a given type + year (year null = latest)
+function nbSavings(p: NbFeatureProps, type: PropType, year: number | null, rollYear: number): number {
+  const t = p.byType[type];
+  if (!t) return 0;
+  const y = String(year ?? rollYear);
+  return t.savingsByYear[y] ?? (year == null ? t.totalSavings : 0);
+}
+
+// loaded chunk cache entry. `filtered` memoizes the visible subset per
+// (transfersOnly, typeFilter) combo so each layer's `data` array keeps a stable
+// reference across re-renders and deck.gl never re-tessellates old chunks.
+type ChunkEntry = { all: Feature[]; transfers: Feature[]; filtered: Map<string, Feature[]>; touched: number };
+
+const MAX_LOADED_CHUNKS = 12;
+
+function chunkData(entry: ChunkEntry, transfersOnly: boolean, typeFilter: PropType): Feature[] {
+  const key = `${transfersOnly ? 't' : 'a'}|${typeFilter}`;
+  let cached = entry.filtered.get(key);
+  if (!cached) {
+    const base = transfersOnly ? entry.transfers : entry.all;
+    cached = typeFilter === 'all' ? base : base.filter((f) => f.properties.cls === typeFilter);
+    entry.filtered.set(key, cached);
+  }
+  return cached;
+}
+
+type SankeyFlow = { cls: 'sfh' | 'multi'; origin: 'prehold' | 'market' | 'relational'; savings: number; count: number };
+
+// §408.1 transfer-list overlay (pipeline/deeds.py). Real recorded-transfer rows
+// keyed by parcel; feeds the records lookup below as the authoritative source.
+type OverlayDeed = {
+  date: string;
+  docType: string | null;
+  docNum: string | null;
+  grantor: string | null;
+  grantee: string | null;
+  consideration: number | null;
+  kind: 'relational' | 'market' | 'other';
+};
+type DeedStore = { source: string; byParcel: Record<string, { verified: boolean; transfers: OverlayDeed[] }> };
+
+// The SF Recorder index is searchable by APN (block + lot). The worker retrieves
+// records automatically; this link is the manual "verify it yourself" path — its
+// hash-router SPA can't be reliably pre-filled via URL, so we open the search and
+// copy the exact block-lot to the clipboard for the user to paste.
+const RECORDER_SEARCH_URL = 'https://recorder.sfgov.org/#/search';
+
+function blockLot(blklot: string): { block: string; lot: string } {
+  return { block: blklot.slice(0, 4).replace(/^0+/, '') || blklot.slice(0, 4), lot: blklot.slice(4) };
+}
+
+type Meta = {
+  generatedAt: string | null;
+  sourceDataAsOf: string | null;
+  rollYear: number;
+  taxRate: number;
+  parcelCount: number;
+  sankey: SankeyFlow[];
+  totalEstAnnualSavings: number;
+  relationalTransferCount: number;
+  medianRatio: Record<string, Record<string, number>>;
+  savingsByYear: Record<string, number>;
+  estimatedParcelsByYear: Record<string, number>;
+  neighborhoods: Neighborhood[];
+  chunks: Chunk[];
+};
+
+type SearchIndex = {
+  nbhds: string[];
+  id: string[];
+  addr: string[];
+  nb: number[];
+  x: (number | null)[];
+  y: (number | null)[];
+};
+
+const fmt$ = (n: number) => '$' + Math.round(n).toLocaleString();
+const fmt$k = (n: number) =>
+  n >= 1_000_000_000
+    ? '$' + (n / 1_000_000_000).toFixed(1) + 'B'
+    : n >= 1_000_000
+      ? '$' + (n / 1_000_000).toFixed(1) + 'M'
+      : '$' + Math.round(n / 1000) + 'k';
+
+// ratio 1 = assessed at market (pastel yellow) -> ratio ~0 = deep subsidy (burnt orange)
+function ratioColor(ratio: number | null, relational: boolean): [number, number, number, number] {
+  if (ratio == null) return [213, 209, 199, 150];
+  // gamma 1.5 spreads the palette across the real distribution (median ratio
+  // ~0.43): near-market homes read pale, only genuine deep-subsidy homes go dark
+  const lin = Math.max(0, Math.min(1, (1 - ratio) / 0.9));
+  const t = Math.pow(lin, 1.5);
+  const stops: [number, number, number][] = [
+    [252, 240, 197],
+    [247, 210, 120],
+    [238, 166, 72],
+    [214, 116, 32],
+    [178, 80, 7],
+  ];
+  const x = t * (stops.length - 1);
+  const i = Math.min(Math.floor(x), stops.length - 2);
+  const f = x - i;
+  const c = stops[i].map((v, k) => Math.round(v + (stops[i + 1][k] - v) * f)) as [number, number, number];
+  return [c[0], c[1], c[2], relational ? 240 : 210];
+}
+
+// ratio (assessed / est. market) for a parcel in a given year, or null if that
+// year has no market estimate. year === null means "use the current-year ratio".
+function ratioAtYear(p: ParcelProps, year: number | null): number | null {
+  if (year == null) return p.ratio;
+  for (const [yr, assessed, est] of p.hist) {
+    if (yr === year) return est && est > 0 ? Math.min(assessed / est, 1) : null;
+  }
+  return null;
+}
+
+function centroidOf(geom: { type: string; coordinates: unknown }): [number, number] {
+  let ring: number[][] = [];
+  if (geom.type === 'Polygon') ring = (geom.coordinates as number[][][])[0];
+  else if (geom.type === 'MultiPolygon') ring = (geom.coordinates as number[][][][])[0][0];
+  if (!ring?.length) return [INITIAL_VIEW.longitude, INITIAL_VIEW.latitude];
+  const [sx, sy] = ring.reduce(([ax, ay], [x, y]) => [ax + x, ay + y], [0, 0]);
+  return [sx / ring.length, sy / ring.length];
+}
+
+// Wording note (2026-07): these labels used to say "family/trust transfer".
+// Checking real recorded deeds against this inference showed that roughly 84% of
+// the parcels we flagged that way were actually arm's-length events (foreclosures,
+// developer sales, corporate relocations, affordable-housing partnerships), not
+// families passing property down. Assessment data alone can only tell us that a
+// transfer happened WITHOUT a reassessment, so that is all these labels now claim.
+// Deed-level parties, where we have them, appear in the Recorded documents panel.
+// See docs/recorder-validation-findings.md.
+const TRANSFER_LABEL: Record<string, string> = {
+  relational: 'Transferred without reassessment',
+  market: 'Market sale (reassessed)',
+  partial: 'Partial reassessment',
+  none: 'No transfer on record since 2007',
+};
+
+const EVENT_LABEL: Record<string, string> = {
+  excluded: 'transfer, no reassessment',
+  reset: 'market sale',
+  partial: 'partial reassessment',
+};
+
+function gapLabel(parcelRatio: number, medianR: number | undefined): string | null {
+  if (!medianR) return null;
+  const rel = parcelRatio / medianR;
+  if (rel <= 0.75) return 'well above average';
+  if (rel <= 0.95) return 'above average';
+  if (rel < 1.1) return 'about average';
+  return 'below average';
+}
+
+function DeltaChart({
+  hist,
+  events,
+  nbhd,
+  meta,
+}: {
+  hist: HistEntry[];
+  events: [number, 'reset' | 'excluded' | 'partial'][];
+  nbhd: string;
+  meta: Meta | null;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const w = 292, h = 150, padX = 10, padTop = 14, padBot = 18;
+  const years = hist.map((d) => d[0]);
+  const maxV = Math.max(...hist.map((d) => Math.max(d[1], d[2] ?? 0)), 1);
+  const minY = Math.min(...years), maxY = Math.max(...years);
+  const x = (yr: number) => padX + ((yr - minY) / Math.max(1, maxY - minY)) * (w - 2 * padX);
+  const y = (v: number) => h - padBot - (v / maxV) * (h - padTop - padBot);
+  const eventByYear = new globalThis.Map(events.map(([yr, k]) => [yr, k]));
+
+  const hovered = hover != null ? hist[hover] : null;
+  const hoverInfo = (() => {
+    if (!hovered) return null;
+    const [year, assessed, est] = hovered;
+    const event = eventByYear.get(year);
+    if (est == null) return { year, assessed, est: null, delta: null, taxDelta: null, label: null, event };
+    const delta = est - assessed;
+    const taxDelta = delta * (meta?.taxRate ?? 0.0118);
+    const label = gapLabel(assessed / est, meta?.medianRatio?.[nbhd]?.[String(year)]);
+    return { year, assessed, est, delta, taxDelta, label, event };
+  })();
+
+  return (
+    <div className="chart">
+      <svg
+        width={w}
+        height={h}
+        onMouseLeave={() => setHover(null)}
+        onMouseMove={(e) => {
+          const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          let best = 0, bestD = Infinity;
+          hist.forEach(([yr], i) => {
+            const d = Math.abs(x(yr) - mx);
+            if (d < bestD) { bestD = d; best = i; }
+          });
+          setHover(best);
+        }}
+      >
+        {hovered && (
+          <rect
+            x={x(hovered[0]) - 6}
+            y={padTop - 4}
+            width={12}
+            height={h - padTop - padBot + 8}
+            className="chart-hoverband"
+          />
+        )}
+        {events.map(([yr, kind]) => (
+          <g key={'ev' + yr}>
+            <line x1={x(yr)} x2={x(yr)} y1={padTop - 4} y2={h - padBot + 4} className={`event-line event-${kind}`} />
+            <path
+              d={`M${x(yr) - 4},${padTop - 6} L${x(yr) + 4},${padTop - 6} L${x(yr)},${padTop} Z`}
+              className={`event-flag event-${kind}`}
+            />
+          </g>
+        ))}
+        {hist.map(([yr, assessed, est], i) => (
+          <g key={yr}>
+            {est != null && (
+              <line x1={x(yr)} x2={x(yr)} y1={y(assessed)} y2={y(est)}
+                className={i === hover ? 'delta-line hot' : 'delta-line'} />
+            )}
+            {est != null && <circle cx={x(yr)} cy={y(est)} r={i === hover ? 4 : 2.5} className="dot-market" />}
+            <circle cx={x(yr)} cy={y(assessed)} r={i === hover ? 4 : 2.5} className="dot-assessed" />
+          </g>
+        ))}
+        <text x={padX} y={h - 4} className="chart-label">{minY}</text>
+        <text x={w - padX} y={h - 4} textAnchor="end" className="chart-label">{maxY}</text>
+      </svg>
+      <div className="chart-key">
+        <span><i className="key-dot key-market" /> market</span>
+        <span><i className="key-dot key-assessed" /> taxed</span>
+        {events.some(([, k]) => k === 'excluded') && <span className="key-event event-excluded-text">▼ transfer, no reassessment</span>}
+        {events.some(([, k]) => k === 'reset') && <span className="key-event event-reset-text">▼ sale</span>}
+      </div>
+      <div className="chart-info">
+        {hoverInfo ? (
+          <>
+            <b>{hoverInfo.year}</b>
+            {hoverInfo.event && (
+              <span className={`event-chip event-${hoverInfo.event}`}>{EVENT_LABEL[hoverInfo.event]}</span>
+            )}
+            {hoverInfo.est != null ? (
+              <>
+                {' '}gap {fmt$k(hoverInfo.delta!)} ≈ {fmt$(hoverInfo.taxDelta!)}/yr in tax
+                {hoverInfo.label && <span className="chart-verdict"> · {hoverInfo.label}</span>}
+              </>
+            ) : (
+              <> taxed {fmt$k(hoverInfo.assessed)} · no market estimate</>
+            )}
+          </>
+        ) : (
+          <span className="chart-hint">hover a year · ▼ marks a change of hands</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [meta, setMeta] = useState<Meta | null>(null);
+  const [searchIdx, setSearchIdx] = useState<SearchIndex | null>(null);
+  const [leaders, setLeaders] = useState<Boards | null>(null);
+  const [viewState, setViewState] = useState<MapViewState>(INITIAL_VIEW);
+  const [selected, setSelected] = useState<ParcelProps | null>(null);
+  const [query, setQuery] = useState('');
+  const [view, setView] = useState<ViewMode>('explore');
+  const [boardTab, setBoardTab] = useState<'relational' | 'all'>('relational');
+  const [boardCls, setBoardCls] = useState<'sfh' | 'multi'>('sfh');
+  const [compareTab, setCompareTab] = useState<'neighborhoods' | 'parcels'>('neighborhoods');
+  const [typeFilter, setTypeFilter] = useState<PropType>('all');
+  const [nbhdRank, setNbhdRank] = useState<'total' | 'perParcel' | 'relational'>('total');
+  const [transfersOnly, setTransfersOnly] = useState(true);
+  const [extrude, setExtrude] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [showCsvGate, setShowCsvGate] = useState(false);
+  const [year, setYear] = useState<number | null>(null); // null = current roll year
+  const [chunkVersion, setChunkVersion] = useState(0); // bumped when a chunk loads
+  const [loadingChunks, setLoadingChunks] = useState(0);
+
+  const embed = useMemo(() => new URLSearchParams(window.location.search).get('embed') === '1', []);
+
+  // the year sweep only lives in the Story; leaving it snaps back to current
+  useEffect(() => {
+    if (view !== 'story') setYear(null);
+  }, [view]);
+
+  // On parcel select, look up its recorded documents by APN — cache-first, so
+  // each parcel hits the county index at most once and the result is saved.
+  useEffect(() => {
+    const sel = selected;
+    if (!sel) {
+      setRecords({ status: 'idle' });
+      return;
+    }
+    // Only the persistent cache is trusted for REAL data; demo rows are cheap and
+    // must never be persisted (a stale demo entry would shadow real worker output).
+    const cached = RECORDS_API ? recordsCache.current.get(sel.id) : undefined;
+    if (cached) {
+      setRecords({ status: 'done', demo: false, records: cached, fetchedAt: 'cached' });
+      return;
+    }
+    let cancelled = false;
+    setRecords({ status: 'loading' });
+    const finish = (recs: DeedRecord[], miss = false) => {
+      if (cancelled) return;
+      if (RECORDS_API && !miss) {
+        recordsCache.current.set(sel.id, recs);
+        localStorage.setItem('sfptg-records-v2', JSON.stringify([...recordsCache.current]));
+      }
+      setRecords({ status: 'done', demo: !RECORDS_API, records: recs, fetchedAt: new Date().toISOString().slice(0, 10), miss });
+    };
+    if (!RECORDS_API) {
+      const t = setTimeout(() => finish(demoRecords(sel)), 1100); // simulate the lookup
+      return () => { cancelled = true; clearTimeout(t); };
+    }
+    fetch(`${RECORDS_API}?apn=${encodeURIComponent(sel.id)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => finish(d.records ?? [], !!d.miss))
+      .catch((e) => !cancelled && setRecords({ status: 'error', message: String(e.message || e) }));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id]);
+
+  // First visit: show the live map for a beat, then fade into the scroll story.
+  // Skipped for embeds, deep links, and returning visitors. We mark it seen when
+  // the auto-intro fires, so it never forces itself again (manual Story nav is
+  // always available from the sidebar).
+  useEffect(() => {
+    if (embed) return;
+    if (/[#&]p=/.test(window.location.hash)) return;
+    if (localStorage.getItem('sfptg-story-seen')) return;
+    const t = setTimeout(() => {
+      setView('story');
+      localStorage.setItem('sfptg-story-seen', '1');
+    }, 1300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // recorded-documents lookup cache (persisted so each APN is fetched once, ever)
+  const [records, setRecords] = useState<RecordsState>({ status: 'idle' });
+  const recordsCache = useRef<globalThis.Map<string, DeedRecord[]>>(
+    new globalThis.Map(RECORDS_API ? JSON.parse(localStorage.getItem('sfptg-records-v2') || '[]') : []),
+  );
+
+  const chunksRef = useRef<globalThis.Map<string, ChunkEntry>>(new globalThis.Map());
+  const fetchingRef = useRef<Set<string>>(new Set());
+  const byId = useRef<globalThis.Map<string, Feature>>(new globalThis.Map());
+  const pendingSelect = useRef<string | null>(null);
+  const selectedSlug = useRef<string | null>(null);
+  const hasSelectedOnce = useRef(false);
+
+  const [nbGeo, setNbGeo] = useState<NbFeature[]>([]);
+  const [deeds, setDeeds] = useState<DeedStore | null>(null);
+  useEffect(() => {
+    fetch('data/meta.json').then((r) => r.json()).then(setMeta);
+    fetch('data/search-index.json').then((r) => r.json()).then(setSearchIdx);
+    fetch('data/leaderboard.json').then((r) => r.json()).then(setLeaders);
+    fetch('data/neighborhoods.geojson').then((r) => r.json()).then((fc) => setNbGeo(fc.features));
+    fetch('data/deeds.json').then((r) => r.json()).then(setDeeds).catch(() => {});
+  }, []);
+
+  // fixed reference so 3D bar heights are comparable across years (bars visibly
+  // grow as the gap widens) rather than re-normalizing every frame
+  const savingsRef = useMemo(() => {
+    let max = 1;
+    for (const f of nbGeo) max = Math.max(max, f.properties.byType.all.totalSavings);
+    return max;
+  }, [nbGeo]);
+
+  // Shareable URLs: #p=ID&v=lng,lat,zoom,pitch,bearing&f=1&y=2015 — every part
+  // optional. Written debounced so panning doesn't spam history. Never touch the
+  // URL before the first interaction, or we'd wipe an incoming deep link before
+  // the restore effect reads it.
+  const restoredFromHash = useRef(false);
+  useEffect(() => {
+    if (selected || year != null) hasSelectedOnce.current = true;
+    if (!hasSelectedOnce.current || !restoredFromHash.current) return;
+    const t = setTimeout(() => {
+      const parts: string[] = [];
+      if (selected) parts.push(`p=${selected.id}`);
+      const v = viewState;
+      parts.push(
+        `v=${v.longitude.toFixed(4)},${v.latitude.toFixed(4)},${v.zoom.toFixed(1)},` +
+          `${Math.round(v.pitch ?? 0)},${Math.round(v.bearing ?? 0)}`,
+      );
+      if (!transfersOnly) parts.push('f=0');
+      if (year != null) parts.push(`y=${year}`);
+      window.history.replaceState(null, '', '#' + parts.join('&'));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [selected, viewState, transfersOnly, year]);
+
+  // Hydrate from the hash once search data is available.
+  useEffect(() => {
+    if (restoredFromHash.current || !searchIdx) return;
+    restoredFromHash.current = true;
+    const hash = window.location.hash.replace(/^#/, '');
+    const params = new URLSearchParams(hash);
+    const v = params.get('v');
+    if (v) {
+      const [lng, lat, zoom, pitch, bearing] = v.split(',').map(Number);
+      if (Number.isFinite(lng) && Number.isFinite(lat)) {
+        setViewState((s) => ({ ...s, longitude: lng, latitude: lat, zoom, pitch: pitch || 0, bearing: bearing || 0 }));
+      }
+    }
+    if (params.get('f') === '0') setTransfersOnly(false);
+    const y = params.get('y');
+    if (y && Number.isFinite(Number(y))) setYear(Number(y));
+    const pid = params.get('p');
+    if (pid) {
+      const i = searchIdx.id.indexOf(pid);
+      if (i >= 0) {
+        flyToMatch({
+          id: searchIdx.id[i],
+          nbhd: searchIdx.nbhds[searchIdx.nb[i]],
+          x: searchIdx.x[i],
+          y: searchIdx.y[i],
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchIdx]);
+
+
+  const loadChunk = useCallback((slug: string) => {
+    if (chunksRef.current.has(slug) || fetchingRef.current.has(slug)) return;
+    fetchingRef.current.add(slug);
+    setLoadingChunks((n) => n + 1);
+    fetch(`data/nbhd/${slug}.json`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`chunk ${slug}: HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((fc) => {
+        if (!Array.isArray(fc?.features)) throw new Error(`chunk ${slug}: bad payload`);
+        const all = fc.features as Feature[];
+        chunksRef.current.set(slug, {
+          all,
+          transfers: all.filter((f) => f.properties.transferType !== 'none'),
+          filtered: new globalThis.Map(),
+          touched: Date.now(),
+        });
+        fetchingRef.current.delete(slug);
+        for (const f of all) byId.current.set(f.properties.id, f);
+        if (pendingSelect.current && byId.current.has(pendingSelect.current)) {
+          const f = byId.current.get(pendingSelect.current)!;
+          setSelected(f.properties);
+          selectedSlug.current = slug;
+          const [lng, lat] = centroidOf(f.geometry);
+          setViewState((v) => ({
+            ...v,
+            longitude: lng,
+            latitude: lat,
+            zoom: Math.max(v.zoom, 16.5),
+            transitionDuration: 700,
+            transitionInterpolator: new FlyToInterpolator(),
+          }));
+          pendingSelect.current = null;
+        }
+        setChunkVersion((v) => v + 1);
+      })
+      .catch((err) => {
+        console.warn(err);
+        fetchingRef.current.delete(slug);
+      })
+      .finally(() => setLoadingChunks((n) => n - 1));
+  }, []);
+
+  // keep memory bounded: evict least-recently-viewed chunks beyond the cap,
+  // never the one holding the current selection or a pending one
+  const evictStaleChunks = useCallback(() => {
+    const store = chunksRef.current;
+    if (store.size <= MAX_LOADED_CHUNKS) return false;
+    const entries = [...store.entries()].sort((a, b) => a[1].touched - b[1].touched);
+    let evicted = false;
+    for (const [slug, entry] of entries) {
+      if (store.size <= MAX_LOADED_CHUNKS) break;
+      if (slug === selectedSlug.current) continue;
+      store.delete(slug);
+      for (const f of entry.all) byId.current.delete(f.properties.id);
+      evicted = true;
+    }
+    return evicted;
+  }, []);
+
+  // Viewport-driven chunk loading (debounced)
+  useEffect(() => {
+    if (!meta || viewState.zoom < PARCEL_ZOOM) return;
+    const t = setTimeout(() => {
+      const vp = new WebMercatorViewport({
+        ...viewState,
+        width: window.innerWidth,
+        height: window.innerHeight,
+      } as never);
+      // getBounds handles pitch and bearing; corner unprojection does not
+      const [west, south, east, north] = vp.getBounds();
+      for (const c of meta.chunks) {
+        if (!c.bbox) continue;
+        const [minx, miny, maxx, maxy] = c.bbox;
+        if (minx <= east && maxx >= west && miny <= north && maxy >= south) {
+          const entry = chunksRef.current.get(c.slug);
+          if (entry) entry.touched = Date.now();
+          else loadChunk(c.slug);
+        }
+      }
+      if (evictStaleChunks()) setChunkVersion((v) => v + 1);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [meta, viewState, loadChunk, evictStaleChunks]);
+
+  const shownCounts = useMemo(() => {
+    void chunkVersion;
+    let shown = 0, total = 0;
+    for (const entry of chunksRef.current.values()) {
+      total += entry.all.length;
+      shown += chunkData(entry, transfersOnly, typeFilter).length;
+    }
+    return { shown, total };
+  }, [chunkVersion, transfersOnly, typeFilter]);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toUpperCase();
+    if (q.length < 3 || !searchIdx) return [];
+    const out: { id: string; addr: string; nbhd: string; x: number | null; y: number | null }[] = [];
+    for (let i = 0; i < searchIdx.addr.length && out.length < 8; i++) {
+      if (searchIdx.addr[i].includes(q)) {
+        out.push({
+          id: searchIdx.id[i],
+          addr: searchIdx.addr[i],
+          nbhd: searchIdx.nbhds[searchIdx.nb[i]],
+          x: searchIdx.x[i],
+          y: searchIdx.y[i],
+        });
+      }
+    }
+    return out;
+  }, [query, searchIdx]);
+
+  const slugByName = useMemo(() => {
+    const m = new globalThis.Map<string, string>();
+    meta?.neighborhoods.forEach((n) => m.set(n.name, n.slug));
+    return m;
+  }, [meta]);
+
+  const flyToMatch = (m: {
+    id: string;
+    nbhd: string;
+    x: number | null;
+    y: number | null;
+    knownTransfer?: boolean;
+  }) => {
+    // note: does NOT switch view — callers that need Explore (compare cards,
+    // leaderboard rows) set it themselves; the Story selects parcels in place.
+    if (m.x != null && m.y != null) {
+      setViewState((v) => ({
+        ...v,
+        longitude: m.x!,
+        latitude: m.y!,
+        zoom: 17,
+        transitionDuration: 900,
+        transitionInterpolator: new FlyToInterpolator(),
+      }));
+    }
+    const f = byId.current.get(m.id);
+    if (f) {
+      pendingSelect.current = null;
+      if (f.properties.transferType === 'none') setTransfersOnly(false);
+      selectedSlug.current = slugByName.get(f.properties.nbhd) ?? null;
+      setSelected(f.properties);
+    } else {
+      pendingSelect.current = m.id;
+      const slug = slugByName.get(m.nbhd);
+      if (slug) loadChunk(slug);
+      // a searched parcel may not have a transfer; don't hide it behind the
+      // filter — unless we already know it IS a transfer (leaderboard rows)
+      if (!m.knownTransfer) setTransfersOnly(false);
+    }
+    setQuery('');
+  };
+
+  const flyToNbhd = (n: Neighborhood) => {
+    if (!n.center) return;
+    setViewState((v) => ({
+      ...v,
+      longitude: n.center![0],
+      latitude: n.center![1],
+      zoom: 14.2,
+      transitionDuration: 900,
+      transitionInterpolator: new FlyToInterpolator(),
+    }));
+    loadChunk(n.slug);
+  };
+
+  const rankedNbhds = useMemo(() => {
+    if (!meta) return [];
+    const arr = [...meta.neighborhoods];
+    if (nbhdRank === 'perParcel') arr.sort((a, b) => b.savingsPerParcel - a.savingsPerParcel);
+    else if (nbhdRank === 'relational') arr.sort((a, b) => b.relational - a.relational);
+    else arr.sort((a, b) => b.totalSavings - a.totalSavings);
+    return arr;
+  }, [meta, nbhdRank]);
+
+  const showParcels = viewState.zoom >= PARCEL_ZOOM;
+
+  // one layer per loaded chunk: each layer's `data` array identity is stable
+  // per (chunk, filter), so panning into new chunks never re-tessellates the
+  // already-loaded ones
+  const parcelLayers = useMemo(() => {
+    void chunkVersion;
+    const layers: GeoJsonLayer<ParcelProps>[] = [];
+    for (const [slug, entry] of chunksRef.current) {
+      layers.push(
+        new GeoJsonLayer<ParcelProps>({
+          id: `parcels-${slug}-${typeFilter}`,
+          data: chunkData(entry, transfersOnly, typeFilter) as never,
+          visible: showParcels,
+          filled: true,
+          stroked: true,
+          extruded: extrude,
+          getElevation: (f) => (extrude ? Math.sqrt(Math.max(f.properties.savings ?? 0, 0)) * 3 : 0),
+          getFillColor: (f) =>
+            ratioColor(ratioAtYear(f.properties, year), f.properties.transferType === 'relational'),
+          getLineColor: (f) =>
+            selected && f.properties.id === selected.id ? [61, 42, 20, 255] : [120, 100, 70, 45],
+          getLineWidth: (f) => (selected && f.properties.id === selected.id ? 3 : 0.5),
+          lineWidthUnits: 'pixels',
+          pickable: showParcels,
+          autoHighlight: true,
+          highlightColor: [90, 60, 20, 70],
+          onClick: (info: PickingInfo) => {
+            pendingSelect.current = null;
+            const f = info.object as Feature | null;
+            selectedSlug.current = f ? slug : null;
+            setSelected(f?.properties ?? null);
+          },
+          updateTriggers: {
+            getFillColor: [year],
+            getLineColor: [selected?.id],
+            getLineWidth: [selected?.id],
+            getElevation: [extrude],
+          },
+        }),
+      );
+    }
+    return layers;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chunkVersion, transfersOnly, typeFilter, showParcels, extrude, selected?.id, year]);
+
+  // 3D extruded neighborhood model: height + color both encode annual est. tax
+  // savings for the active property type + year, so the timeline animates the
+  // gap growing and neighborhoods read as comparable 3D bars.
+  const MAX_HEIGHT = 6000;
+  const rollYear = meta?.rollYear ?? 2025;
+  const nbLayer = new GeoJsonLayer<NbFeatureProps>({
+    id: 'nbhd-3d',
+    data: { type: 'FeatureCollection', features: nbGeo } as never,
+    visible: !showParcels,
+    extruded: true,
+    wireframe: true,
+    material: { ambient: 0.6, diffuse: 0.5, shininess: 20 },
+    // height = total annual savings (magnitude); color = how deep the subsidy
+    // runs (median assessed/market), same ramp as the parcels for consistency
+    getElevation: (f) =>
+      (nbSavings(f.properties, typeFilter, year, rollYear) / savingsRef) * MAX_HEIGHT,
+    getFillColor: (f) => {
+      const [r, g, b] = ratioColor(f.properties.medianRatio, false);
+      return [r, g, b, 235];
+    },
+    getLineColor: [120, 80, 40, 90],
+    lineWidthUnits: 'pixels',
+    getLineWidth: 1,
+    pickable: !showParcels,
+    autoHighlight: true,
+    highlightColor: [255, 255, 255, 40],
+    onClick: (info: PickingInfo) => {
+      const f = info.object as NbFeature | null;
+      if (f?.properties.center) {
+        setViewState((v) => ({
+          ...v,
+          longitude: f.properties.center![0],
+          latitude: f.properties.center![1],
+          zoom: 14.2,
+          transitionDuration: 900,
+          transitionInterpolator: new FlyToInterpolator(),
+        }));
+        loadChunk(f.properties.slug);
+      }
+    },
+    updateTriggers: {
+      getElevation: [typeFilter, year, savingsRef],
+      getFillColor: [typeFilter, year, savingsRef],
+    },
+    // smoothly tween heights + colors between years instead of hard-cutting
+    transitions: {
+      getElevation: { duration: 750, easing: (t: number) => t * t * (3 - 2 * t) },
+      getFillColor: { duration: 750 },
+    },
+  });
+
+  const sel = selected;
+  const NAV: { id: ViewMode; label: string; icon: string }[] = [
+    { id: 'explore', label: 'Explore', icon: 'map' },
+    { id: 'story', label: 'Story', icon: 'story' },
+    { id: 'breakdown', label: 'Breakdown', icon: 'breakdown' },
+    { id: 'compare', label: 'Compare', icon: 'compare' },
+  ];
+  return (
+    <div className={`app view-${view}`}>
+      {!embed && (
+        <nav className="railnav">
+          {NAV.map((n) => (
+            <button
+              key={n.id}
+              className={view === n.id ? 'on' : ''}
+              onClick={() => setView(n.id)}
+              title={n.label}
+              aria-label={n.label}
+            >
+              <Icon name={n.icon} />
+              <span className="rail-tip">{n.label}</span>
+            </button>
+          ))}
+          <span className="rail-sep" />
+          <button onClick={() => setShowAbout(true)} title="About & FAQ" aria-label="About">
+            <Icon name="info" />
+            <span className="rail-tip">About</span>
+          </button>
+        </nav>
+      )}
+
+      <div className="map-pane">
+      <DeckGL
+        viewState={viewState}
+        onViewStateChange={(e) => setViewState(e.viewState as MapViewState)}
+        controller={true}
+        layers={[nbLayer, ...parcelLayers]}
+        getTooltip={({ object, layer }: PickingInfo) => {
+          if (!object) return null;
+          if (layer?.id === 'nbhd-3d') {
+            const p = (object as NbFeature).properties;
+            const sav = nbSavings(p, typeFilter, year, rollYear);
+            return {
+              html: `<b>${p.name}</b><br/>${TYPE_LABEL[typeFilter]} · ${year ?? rollYear}<br/>≈ ${fmt$k(sav)}/yr in tax savings · ${p.byType[typeFilter].relational.toLocaleString()} kept old basis<br/>click to zoom in`,
+              style: { background: '#fffdf8', color: '#3a3226', fontSize: '12px', borderRadius: '6px', border: '1px solid #e0d8c4' },
+            };
+          }
+          const p = (object as Feature).properties;
+          return {
+            html: `<b>${p.addr}</b><br/>assessed ${fmt$(p.assessed)}${
+              p.estMarket ? ` · est. market ${fmt$(p.estMarket)}` : ''
+            }${p.savings && p.savings > 0 ? `<br/>≈ ${fmt$(p.savings)}/yr tax savings` : ''}`,
+            style: { background: '#fffdf8', color: '#3a3226', fontSize: '12px', borderRadius: '6px', border: '1px solid #e0d8c4' },
+          };
+        }}
+      >
+        <Map mapStyle={BASEMAP} />
+      </DeckGL>
+      </div>
+
+      {view === 'story' && meta && (
+        <StoryScroller
+          meta={meta}
+          onFly={(v) => setViewState((s) => ({ ...s, ...v, transitionDuration: 1400, transitionInterpolator: new FlyToInterpolator() }))}
+          onSelectParcel={(id, nbhd) => {
+            const idx = searchIdx;
+            if (!idx) return;
+            const i = idx.id.indexOf(id);
+            if (i >= 0) flyToMatch({ id, nbhd, x: idx.x[i], y: idx.y[i] });
+          }}
+          onSetTransfersOnly={setTransfersOnly}
+          onSetYear={setYear}
+          onExplore={() => {
+            setYear(null);
+            setView('explore');
+          }}
+        />
+      )}
+
+      {view === 'breakdown' && meta && (
+        <SankeyView flows={meta.sankey} onExplore={() => setView('explore')} />
+      )}
+
+      {view === 'explore' && (
+      <header className="topbar">
+        <div className="title">
+          <h1>SF Property Tax Gap</h1>
+          <span className="sub">
+            {meta
+              ? `est. ${fmt$k(meta.totalEstAnnualSavings)}/yr in Prop 13 savings across ${meta.parcelCount.toLocaleString()} parcels`
+              : 'loading…'}
+          </span>
+        </div>
+        <div className="search">
+          <input
+            placeholder="Search address… (e.g. 500 CHURCH)"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          {matches.length > 0 && (
+            <ul className="results">
+              {matches.map((m) => (
+                <li key={m.id} onClick={() => flyToMatch(m)}>
+                  <b>{m.addr}</b> <span>{m.nbhd}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="filters">
+          <select
+            className="nbhd-select"
+            aria-label="Jump to neighborhood"
+            value=""
+            onChange={(e) => {
+              const n = meta?.neighborhoods.find((x) => x.slug === e.target.value);
+              if (n) flyToNbhd(n);
+            }}
+          >
+            <option value="">All neighborhoods…</option>
+            {(meta?.neighborhoods ?? [])
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((n) => (
+                <option key={n.slug} value={n.slug}>{n.name}</option>
+              ))}
+          </select>
+          <div className="segmented iconseg" role="group" aria-label="Property type">
+            <button className={typeFilter === 'all' ? 'on' : ''} onClick={() => setTypeFilter('all')} title="All property">
+              All
+            </button>
+            <button className={typeFilter === 'sfh' ? 'on' : ''} onClick={() => setTypeFilter('sfh')} title="Single-family homes">
+              <Icon name="home" size={15} /> Single
+            </button>
+            <button className={typeFilter === 'multi' ? 'on' : ''} onClick={() => setTypeFilter('multi')} title="Multi-family">
+              <Icon name="building" size={15} /> Multi
+            </button>
+          </div>
+          <button
+            className={`chip ${transfersOnly ? 'on' : ''}`}
+            title="Show only parcels that changed hands since 2007"
+            onClick={() => setTransfersOnly(!transfersOnly)}
+          >
+            <Icon name="transfer" size={15} /> Transfers
+          </button>
+          <div className="segmented iconseg" role="group" aria-label="Dimension">
+            <button
+              className={!extrude ? 'on' : ''}
+              title="Flat 2D view"
+              onClick={() => {
+                setViewState((v) => ({ ...v, pitch: 0, transitionDuration: 400 }));
+                setExtrude(false);
+              }}
+            >
+              2D
+            </button>
+            <button
+              className={extrude ? 'on' : ''}
+              title="3D extruded view"
+              onClick={() => {
+                setViewState((v) => ({ ...v, pitch: 45, transitionDuration: 400 }));
+                setExtrude(true);
+              }}
+            >
+              <Icon name="cube" size={15} /> 3D
+            </button>
+          </div>
+        </div>
+      </header>
+      )}
+
+
+      {showAbout && (
+        <div className="about-overlay" onClick={() => setShowAbout(false)}>
+          <div className="about-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="close" onClick={() => setShowAbout(false)}>×</button>
+            <h2>About this map</h2>
+            <p>
+              An open-data look at who benefits from Prop 13 in San Francisco: every parcel's taxed
+              value against its estimated market value, the transfers that passed tax discounts along,
+              and what that adds up to, block by block.
+            </p>
+            <p className="about-me">
+              Built by Jeff Lin. {/* TODO(jeff): add a sentence or two about yourself and why you made this */}
+              Questions, corrections, or removal requests: see the FAQ below.
+            </p>
+            {DONATE_URL && (
+              <a className="donate" href={DONATE_URL} target="_blank" rel="noreferrer">
+                Support this project
+              </a>
+            )}
+            <h2>FAQ</h2>
+            {FAQ.map((item) => (
+              <details key={item.q}>
+                <summary>{item.q}</summary>
+                {item.a.split('\n\n').map((p, i) => (
+                  <p key={i}>{p}</p>
+                ))}
+              </details>
+            ))}
+            <p className="note">
+              Data: DataSF assessor secured roll (wv5m-vpq2) and active parcels (acdm-wktn). Basemap ©
+              CARTO, © OpenStreetMap contributors. Model accuracy: median absolute error ~18% on ~11,000
+              held-out 2022–2025 sales.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {view === 'explore' && (
+      <div className="legend">
+        <div className="legend-title">how far below market it's taxed</div>
+        <div className="legend-bar" />
+        <div className="legend-ends">
+          <span>far below (deep subsidy)</span>
+          <span>near market</span>
+        </div>
+        {!showParcels && <div className="legend-note">3D height = total est. savings · color = subsidy depth · click to zoom in</div>}
+        {showParcels && <div className="legend-note">gray = no market estimate</div>}
+        {showParcels && transfersOnly && (
+          <div className="legend-note">
+            showing only parcels that changed hands since 2007
+            {shownCounts.total > 0 &&
+              ` (${shownCounts.shown.toLocaleString()} of ${shownCounts.total.toLocaleString()} loaded)`}
+          </div>
+        )}
+        {loadingChunks > 0 && <div className="legend-note">loading parcels…</div>}
+        {year != null && <div className="legend-note">viewing {year} assessments</div>}
+        {meta?.sourceDataAsOf && (
+          <div className="legend-stamp">data as of {meta.sourceDataAsOf} · roll {meta.rollYear}</div>
+        )}
+      </div>
+      )}
+
+      {view === 'compare' && meta && (
+        <div className="compare-view">
+          <div className="compare-head">
+            <div className="compare-tabs">
+              <button className={compareTab === 'neighborhoods' ? 'on' : ''} onClick={() => setCompareTab('neighborhoods')}>
+                Neighborhoods
+              </button>
+              <button className={compareTab === 'parcels' ? 'on' : ''} onClick={() => setCompareTab('parcels')}>
+                Top parcels
+              </button>
+            </div>
+            {compareTab === 'neighborhoods' && (
+              <div className="compare-controls">
+                <span className="filter-label">Rank by</span>
+                <div className="segmented">
+                  <button className={nbhdRank === 'total' ? 'on' : ''} onClick={() => setNbhdRank('total')}>Total</button>
+                  <button className={nbhdRank === 'perParcel' ? 'on' : ''} onClick={() => setNbhdRank('perParcel')}>Per home</button>
+                  <button className={nbhdRank === 'relational' ? 'on' : ''} onClick={() => setNbhdRank('relational')}>Kept old basis</button>
+                </div>
+                <button className="chip" onClick={() => setShowCsvGate(true)}>↓ CSV</button>
+              </div>
+            )}
+            {compareTab === 'parcels' && (
+              <div className="compare-controls">
+                <div className="segmented">
+                  <button className={boardCls === 'sfh' ? 'on' : ''} onClick={() => setBoardCls('sfh')}>Single-family</button>
+                  <button className={boardCls === 'multi' ? 'on' : ''} onClick={() => setBoardCls('multi')}>Multi-family</button>
+                </div>
+                <div className="segmented">
+                  <button className={boardTab === 'relational' ? 'on' : ''} onClick={() => setBoardTab('relational')}>Kept old basis</button>
+                  <button className={boardTab === 'all' ? 'on' : ''} onClick={() => setBoardTab('all')}>All savings</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {compareTab === 'neighborhoods' ? (
+            <div className="compare-grid">
+              {rankedNbhds.map((n, i) => (
+                <button
+                  key={n.slug}
+                  className="nb-card"
+                  onClick={() => {
+                    setView('explore');
+                    flyToNbhd(n);
+                  }}
+                >
+                  <div className="nb-rank">{i + 1}</div>
+                  <div className="nb-name">{n.name}</div>
+                  <div className="nb-big">
+                    {nbhdRank === 'perParcel'
+                      ? `${fmt$(n.savingsPerParcel)}`
+                      : nbhdRank === 'relational'
+                        ? n.relational.toLocaleString()
+                        : fmt$k(n.totalSavings)}
+                    <span className="nb-unit">
+                      {nbhdRank === 'perParcel' ? '/home/yr' : nbhdRank === 'relational' ? ' transfers' : '/yr'}
+                    </span>
+                  </div>
+                  <SavingsChart data={n.savingsByYear} caption="" />
+                  <div className="nb-sub">{n.parcels.toLocaleString()} homes · {n.relational.toLocaleString()} kept old basis</div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            leaders && (
+              <div className="compare-list">
+                {(boardTab === 'relational' ? leaders[boardCls].topRelational : leaders[boardCls].topSavings)
+                  .slice(0, 60)
+                  .map((r, i) => (
+                    <button
+                      key={r.id}
+                      className="parcel-row"
+                      onClick={() => {
+                        setView('explore');
+                        flyToMatch({
+                          id: r.id,
+                          nbhd: r.nbhd,
+                          knownTransfer: r.transferType !== 'none',
+                          ...centroidFromLoaded(byId.current.get(r.id)),
+                        });
+                      }}
+                    >
+                      <span className="pr-rank">{i + 1}</span>
+                      <span className="pr-addr">{r.addr}<em>{r.nbhd}</em></span>
+                      <span className="pr-save">
+                        {fmt$(r.savings)}/yr
+                        {r.transferType === 'relational' && r.avoidedSince != null && (
+                          <em>{fmt$k(r.avoidedSince)} since '{String(r.transferYear).slice(2)}</em>
+                        )}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {view === 'explore' && sel && (
+        <aside className="panel">
+          <button
+            className="close"
+            onClick={() => {
+              pendingSelect.current = null;
+              selectedSlug.current = null;
+              setSelected(null);
+            }}
+          >
+            ×
+          </button>
+          <h2>{sel.addr}</h2>
+          <div className="muted">
+            {sel.nbhd} · {sel.use}
+            {sel.built ? ` · built ${sel.built}` : ''}
+            {sel.units ? ` · ${sel.units} unit${sel.units > 1 ? 's' : ''}` : ''}
+            {sel.area ? ` · ${sel.area.toLocaleString()} sqft` : ''}
+          </div>
+
+          <span
+            className={`badge badge-${sel.transferType}`}
+            title="Inferred from assessment behavior in the tax rolls, not from recorded deeds. A transfer with no reassessment to market matches parent-child / grandparent-grandchild (Prop 58/193/19), spousal, and trust transfers."
+          >
+            {TRANSFER_LABEL[sel.transferType]}
+            {sel.transferYear ? ` · ${sel.transferYear}` : ''}
+          </span>
+
+          {sel.savings != null && sel.savings > 0 ? (
+            <div className="headline">
+              <div className="headline-num">{fmt$(sel.savings)}/yr</div>
+              <div className="headline-sub">less property tax than a new buyer of this home would owe</div>
+              {sel.transferType === 'relational' && sel.avoidedSince != null && sel.avoidedSince > 0 && (
+                <div className="headline-since">
+                  ≈ {fmt$(sel.avoidedSince)} kept since the {sel.transferYear} transfer
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="headline">
+              <div className="headline-sub">
+                {sel.estMarket != null ? 'Taxed at close to what a new buyer would owe.' : 'No market estimate for this property.'}
+              </div>
+            </div>
+          )}
+
+          {sel.estMarket != null && (
+            <p
+              className="plain"
+              title="Est. worth is our own estimate, not a third party: the median price per square foot of similar recently-sold properties in this neighborhood, times this building's size. Typically within ~18% of real sale prices."
+            >
+              Taxed as if worth <b>{fmt$k(sel.assessed)}</b>, but we estimate it's really worth about{' '}
+              <b>{fmt$k(sel.estMarket)}</b> ⓘ — so the yearly tax is <b>{fmt$k(sel.taxEst)}</b>, not the{' '}
+              <b>{fmt$k(Math.round(sel.estMarket * (meta?.taxRate ?? 0.0118)))}</b> a new buyer would owe.
+            </p>
+          )}
+
+          <DeltaChart hist={sel.hist} events={sel.events} nbhd={sel.nbhd} meta={meta} />
+
+          {sel.periods.length > 0 && (
+            <>
+              <h3>Who benefited</h3>
+              <ul className="periods">
+                {[...sel.periods].reverse().map(([start, end, kind, saved], i) => (
+                  <li key={start} className={i === 0 ? 'current' : ''}>
+                    <span className="period-range">
+                      {i === 0 ? `${start}–now` : start === end ? String(start) : `${start}–${end}`}
+                    </span>
+                    <span className={`period-kind pk-${kind}`}>
+                      {kind === 'initial'
+                        ? 'owner as of 2007'
+                        : kind === 'relational'
+                          ? 'transfer kept the old basis'
+                          : kind === 'market'
+                            ? 'bought at market'
+                            : 'partial reassessment'}
+                    </span>
+                    <span className="period-saved">{saved ? `≈ ${fmt$k(saved)} saved` : '—'}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          <StreetComparison sel={sel} chunkVersion={chunkVersion} chunks={chunksRef.current} />
+
+          {(() => {
+            // Prefer real §408.1 overlay data for this parcel if we have it;
+            // otherwise use the on-demand records lookup, which retrieves the full
+            // set of recorded documents (names included) from the open public index
+            // via the worker (demo rows until a worker URL is configured).
+            const overlay = deeds?.byParcel[sel.id];
+            if (overlay && overlay.transfers.length) {
+              return (
+                <>
+                  <h3>Recorded transfers (verified)</h3>
+                  <ul className="rec-list">
+                    {[...overlay.transfers].reverse().map((r, i) => (
+                      <li key={i}>
+                        <span className="rec-date">{r.date.slice(0, 4)}</span>
+                        <span className="rec-doc">
+                          {r.docType ?? 'Deed'}
+                          {r.kind === 'relational' && <em className="rec-exempt"> · family/trust</em>}
+                          {r.consideration === 0 && <em className="rec-exempt"> · $0 tax</em>}
+                          {r.grantee && <em> · to {r.grantee}</em>}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="est-source">Source: SF Assessor-Recorder §408.1 transfer list.</p>
+                </>
+              );
+            }
+            return (
+              <>
+                <h3>Recorded documents (public)</h3>
+                {records.status === 'loading' && (
+                  <div className="rec-loading">
+                    <span className="rec-spinner" /> Checking SF recorded documents for parcel {sel.id}…
+                  </div>
+                )}
+                {records.status === 'error' && (
+                  <p className="est-source">Couldn't reach the records service ({records.message}).</p>
+                )}
+                {records.status === 'done' && (
+                  <>
+                    {records.demo ? (
+                      <p className="rec-demo">
+                        Sample rows from our inferred transfers. Real deed types, names, and transfer tax
+                        come from the §408.1 list (see docs) or the recorder — look this parcel up yourself:
+                      </p>
+                    ) : (
+                      <p className="est-source">
+                        {records.records.length
+                          ? `${records.records.length} document${records.records.length === 1 ? '' : 's'} from the SF Assessor-Recorder public index.`
+                          : records.miss
+                            ? 'This parcel has not been looked up yet. Search it directly in the county index below.'
+                            : 'No documents recorded for this parcel since 1990 in the public index.'}
+                      </p>
+                    )}
+                    <ul className="rec-list">
+                      {records.records.map((r, i) => {
+                        const hasNames =
+                          (r.grantor && r.grantor !== '—') || (r.grantee && r.grantee !== '—');
+                        return (
+                          <li key={r.docNumber ?? i}>
+                            <span className="rec-date">{r.date.slice(0, 4)}</span>
+                            <span className="rec-doc">
+                              <span className="rec-doctype">
+                                {r.docType}
+                                {r.kind === 'market' && <em className="rec-tag rec-market"> transfer</em>}
+                                {r.kind === 'relational' && (
+                                  <em className="rec-tag rec-exempt"> family/trust</em>
+                                )}
+                                {r.transferTax === 0 && <em className="rec-exempt"> · $0 tax</em>}
+                              </span>
+                              {hasNames && (
+                                <span className="rec-names">
+                                  <span className="rec-party">{r.grantor || '—'}</span>
+                                  <span className="rec-arrow"> → </span>
+                                  <span className="rec-party">{r.grantee || '—'}</span>
+                                </span>
+                              )}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <a
+                      className="rec-lookup"
+                      href={RECORDER_SEARCH_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={() => {
+                        const { block, lot } = blockLot(sel.id);
+                        navigator.clipboard?.writeText(`${block}-${lot}`).catch(() => {});
+                      }}
+                    >
+                      ↗ Verify block {blockLot(sel.id).block} lot {blockLot(sel.id).lot} in the official records
+                      <em> — block-lot copied; paste it into the APN search</em>
+                    </a>
+                  </>
+                )}
+              </>
+            );
+          })()}
+
+          <button
+            className="share-btn"
+            onClick={() => downloadShareCard(sel, streetContextFor(sel, chunksRef.current), meta)}
+          >
+            ↗ Share this parcel (image)
+          </button>
+
+          {sel.transferType === 'relational' && (
+            <p className="caveat">
+              &ldquo;Transferred without reassessment&rdquo; is inferred from assessment
+              behavior, not from the deed. It means the taxable value did not reset when
+              the property changed hands. It does <strong>not</strong> establish that the
+              transfer was between family members. Check the recorded documents above for
+              the actual parties.
+            </p>
+          )}
+
+          <p
+            className="note"
+            title="Market value = neighborhood median $/sqft of same-class properties reassessed in the last 3 years, times building area. Tax = 1.1805% of assessed value net of exemptions. Sources: DataSF assessor roll (wv5m-vpq2) and parcels (acdm-wktn)."
+          >
+            Estimates from DataSF open data · names from the SF Recorder public index
+          </p>
+        </aside>
+      )}
+
+      {showCsvGate && meta && (
+        <div className="about-overlay" onClick={() => setShowCsvGate(false)}>
+          <div className="about-modal csv-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="close" onClick={() => setShowCsvGate(false)}>×</button>
+            <h2>Download the neighborhood data</h2>
+            <p>
+              This is a free, open project. Assembling and cleaning nine million rows of assessment
+              history into these numbers takes real compute and time, and keeping it current costs money
+              every year. If the data is useful to you, a contribution on any scale helps keep it free
+              and up to date. No pressure, the download works either way.
+            </p>
+            <div className="csv-give">
+              {['$5', '$25', '$100', 'Other'].map((amt) => (
+                <a
+                  key={amt}
+                  className="give-pill"
+                  href={DONATE_URL || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => {
+                    if (!DONATE_URL) e.preventDefault();
+                  }}
+                >
+                  {amt}
+                </a>
+              ))}
+            </div>
+            {!DONATE_URL && <p className="note">Donations open soon, the link will appear here.</p>}
+            <a
+              className="donate"
+              href="data/neighborhoods.csv"
+              download="sf-property-tax-neighborhoods.csv"
+              onClick={() => setShowCsvGate(false)}
+            >
+              Download CSV ({meta.neighborhoods.length} neighborhoods)
+            </a>
+            <p className="note">
+              Neighborhood aggregates only (no per-parcel data). Data as of {meta.sourceDataAsOf ?? '—'}.
+            </p>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+function centroidFromLoaded(f: Feature | undefined): { x: number | null; y: number | null } {
+  if (!f) return { x: null, y: null };
+  const [x, y] = centroidOf(f.geometry);
+  return { x, y };
+}
+
+function median(sorted: number[]): number {
+  const n = sorted.length;
+  return n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+}
+
+type StreetContext = { street: string; n: number; medianPct: number; rank: number | null; avgSavings: number } | null;
+
+function streetContextFor(sel: ParcelProps, chunks: globalThis.Map<string, ChunkEntry>): StreetContext {
+  if (!sel.street) return null;
+  let feats: Feature[] | null = null;
+  for (const entry of chunks.values()) {
+    if (entry.all.length && entry.all[0].properties.nbhd === sel.nbhd) {
+      feats = entry.all;
+      break;
+    }
+  }
+  if (!feats) return null;
+  const mine = feats
+    .map((f) => f.properties)
+    .filter((p) => p.street === sel.street && p.ratio != null);
+  if (mine.length < 3) return null;
+  const med = median(mine.map((p) => p.ratio!).sort((a, b) => a - b));
+  const avg = mine.reduce((s, p) => s + (p.savings ?? 0), 0) / mine.length;
+  const rank = sel.ratio != null ? mine.filter((p) => p.ratio! < sel.ratio!).length + 1 : null;
+  return { street: sel.street, n: mine.length, medianPct: Math.round(med * 100), rank, avgSavings: avg };
+}
+
+// Render a 1200x630 social-share card to a PNG download, entirely client-side.
+function downloadShareCard(sel: ParcelProps, street: StreetContext, meta: Meta | null) {
+  const W = 1200, H = 630;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#f7f3ea';
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = '#b25007';
+  g.fillRect(0, 0, W, 12);
+
+  g.fillStyle = '#2c2418';
+  g.font = 'bold 52px Helvetica, Arial, sans-serif';
+  g.fillText(sel.addr, 60, 110);
+  g.fillStyle = '#8a8070';
+  g.font = '26px Helvetica, Arial, sans-serif';
+  g.fillText(`${sel.nbhd} · ${sel.use ?? ''}`, 60, 152);
+
+  if (sel.savings != null && sel.savings > 0) {
+    g.fillStyle = '#b25007';
+    g.font = 'bold 96px Helvetica, Arial, sans-serif';
+    g.fillText(`${fmt$(sel.savings)}/yr`, 60, 280);
+    g.fillStyle = '#3a3226';
+    g.font = '30px Helvetica, Arial, sans-serif';
+    g.fillText('less property tax than a new buyer would pay', 60, 326);
+  }
+  if (sel.transferType === 'relational' && sel.avoidedSince != null && sel.transferYear) {
+    g.fillStyle = '#2c2418';
+    g.font = 'bold 34px Helvetica, Arial, sans-serif';
+    g.fillText(`≈ ${fmt$(sel.avoidedSince)} avoided since the ${sel.transferYear} transfer`, 60, 400);
+  }
+  if (street) {
+    g.fillStyle = '#5a5142';
+    g.font = '26px Helvetica, Arial, sans-serif';
+    const rankTxt = street.rank ? `#${street.rank} lowest of ${street.n} on ${street.street}` : street.street;
+    g.fillText(`On this block: ${rankTxt}, median taxed at ${street.medianPct}% of value`, 60, 460);
+  }
+
+  // mini dumbbell of assessed vs market over the years
+  const chartX = 60, chartY = 500, chartW = W - 120, chartH = 80;
+  const hist = sel.hist;
+  const maxV = Math.max(...hist.map((d) => Math.max(d[1], d[2] ?? 0)), 1);
+  const minY = hist[0][0], maxY = hist[hist.length - 1][0];
+  const px = (yr: number) => chartX + ((yr - minY) / Math.max(1, maxY - minY)) * chartW;
+  const py = (v: number) => chartY + chartH - (v / maxV) * chartH;
+  for (const [yr, av, est] of hist) {
+    if (est != null) {
+      g.strokeStyle = '#d8c9ae';
+      g.beginPath();
+      g.moveTo(px(yr), py(av));
+      g.lineTo(px(yr), py(est));
+      g.stroke();
+      g.fillStyle = '#b25007';
+      g.beginPath();
+      g.arc(px(yr), py(est), 4, 0, 7);
+      g.fill();
+    }
+    g.fillStyle = '#4a4238';
+    g.beginPath();
+    g.arc(px(yr), py(av), 4, 0, 7);
+    g.fill();
+  }
+
+  g.fillStyle = '#8a8070';
+  g.font = '22px Helvetica, Arial, sans-serif';
+  g.fillText(`SF Property Tax Gap · data as of ${meta?.sourceDataAsOf ?? ''} · estimates from open data`, 60, H - 28);
+
+  c.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sf-tax-gap-${sel.id}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, 'image/png');
+}
+
+type StoryStep = {
+  kicker: string;
+  title: string;
+  body: string;
+  view: Partial<MapViewState>;
+  parcel?: { id: string; nbhd: string };
+  transfersOnly?: boolean;
+  year?: number | null;
+  play?: boolean; // auto-animate 2007 -> latest with a live metric
+};
+
+const STORY_STEPS: StoryStep[] = [
+  {
+    kicker: 'San Francisco',
+    title: 'Two homes on the same block, wildly different tax bills',
+    body: 'One family bought decades ago. Their neighbor bought last year. They can owe ten times more in property tax for a nearly identical house. This is the map of that gap, block by block.',
+    view: { longitude: -122.4425, latitude: 37.758, zoom: 11.4, pitch: 42, bearing: 0 },
+  },
+  {
+    kicker: 'How Prop 13 works',
+    title: 'Taxed on what you paid, not what it\'s worth',
+    body: 'Since 1978, California taxes a home on its purchase price, rising at most 2% a year, until it sells again. Prices have far outrun 2%, so the longer you own, the wider the gap between your tax bill and the home\'s real value.',
+    view: { longitude: -122.4425, latitude: 37.758, zoom: 11.6, pitch: 45, bearing: 15 },
+  },
+  {
+    kicker: 'The citywide picture',
+    title: 'About $2 billion a year in tax savings',
+    body: 'Each 3D block is a neighborhood; taller and darker means a bigger gap. Sunset, the Richmond, and West of Twin Peaks tower, older, long-held, single-family neighborhoods where the gap has compounded for decades.',
+    view: { longitude: -122.4525, latitude: 37.752, zoom: 11.7, pitch: 50, bearing: -10 },
+  },
+  {
+    kicker: 'It compounds',
+    title: 'Watch the gap widen since 2007',
+    body: 'Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners held, the gap, and the yearly savings, grew. The blocks rise in real time.',
+    view: { longitude: -122.4525, latitude: 37.752, zoom: 11.7, pitch: 50, bearing: -10 },
+    play: true,
+  },
+  {
+    kicker: 'It can pass in the family',
+    title: 'When the low tax basis is inherited',
+    body: 'A sale normally resets the tax. But parent-to-child, spousal, and trust transfers are exempt: the home changes hands and the old, low tax passes with it. This West of Twin Peaks house passed within a family in 2011 and is still taxed on 29% of its value — about $65,000 a year less than a new buyer would owe, roughly $690,000 kept since.',
+    view: { longitude: -122.4594, latitude: 37.7366, zoom: 16.5, pitch: 30, bearing: 0 },
+    parcel: { id: '2992059', nbhd: 'West of Twin Peaks' },
+    year: null,
+  },
+  {
+    kicker: 'Now explore',
+    title: 'Find your block',
+    body: 'Search any address, filter by property type, scrub the years, or open the Breakdown to see where the $2 billion sits. Long ownership accounts for most of it. Transfers that skipped a reassessment are a small slice.',
+    view: { longitude: -122.4425, latitude: 37.758, zoom: 12, pitch: 40, bearing: 0 },
+    transfersOnly: true,
+  },
+];
+
+// Two-column scrollytelling: text steps scroll on the left, the live 3D map is
+// pinned on the right (via .app.view-story layout). Each step, when it scrolls
+// into view, drives the shared map's camera, filters, and year.
+function StoryScroller({
+  meta,
+  onFly,
+  onSelectParcel,
+  onSetTransfersOnly,
+  onSetYear,
+  onExplore,
+}: {
+  meta: Meta;
+  onFly: (v: Partial<MapViewState>) => void;
+  onSelectParcel: (id: string, nbhd: string) => void;
+  onSetTransfersOnly: (v: boolean) => void;
+  onSetYear: (y: number | null) => void;
+  onExplore: () => void;
+}) {
+  const [active, setActive] = useState(0);
+  const [playYear, setPlayYear] = useState<number | null>(null);
+  const refs = useRef<(HTMLDivElement | null)[]>([]);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const activeRef = useRef(0);
+  const rollYear = meta.rollYear;
+
+  const applyStep = useCallback(
+    (i: number) => {
+      const s = STORY_STEPS[i];
+      onFly(s.view);
+      onSetTransfersOnly(s.transfersOnly ?? false);
+      if (!s.play && 'year' in s) onSetYear(s.year ?? null);
+      if (s.parcel) {
+        const p = s.parcel;
+        setTimeout(() => onSelectParcel(p.id, p.nbhd), 900);
+      }
+    },
+    [onFly, onSelectParcel, onSetTransfersOnly, onSetYear],
+  );
+
+  // deterministic active-step detection: whichever step's center is nearest the
+  // container's vertical center wins. Robust across programmatic + real scroll.
+  const onScroll = useCallback(() => {
+    const sc = scrollRef.current;
+    if (!sc) return;
+    const mid = sc.scrollTop + sc.clientHeight / 2;
+    let best = 0, bestD = Infinity;
+    refs.current.forEach((el, i) => {
+      if (!el) return;
+      const c = el.offsetTop + el.clientHeight / 2;
+      const d = Math.abs(c - mid);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (best !== activeRef.current) {
+      activeRef.current = best;
+      setActive(best);
+      applyStep(best);
+    }
+  }, [applyStep]);
+
+  useEffect(() => {
+    applyStep(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // when the play step is active, sweep 2007 -> latest and loop; the layer's own
+  // 750ms transition tweens the heights/colors so the sweep looks continuous
+  const playing = STORY_STEPS[active]?.play ?? false;
+  useEffect(() => {
+    if (!playing) {
+      setPlayYear(null);
+      return;
+    }
+    let y = 2007;
+    setPlayYear(y);
+    onSetYear(y);
+    const id = setInterval(() => {
+      y = y >= rollYear ? 2007 : y + 1;
+      setPlayYear(y);
+      onSetYear(y >= rollYear ? null : y);
+    }, 850);
+    return () => clearInterval(id);
+  }, [playing, rollYear, onSetYear]);
+
+  const metricYear = playYear ?? rollYear;
+  const metricVal = meta.savingsByYear[String(metricYear)] ?? 0;
+
+  return (
+    <div className={`story2 ${playing ? 'playing' : ''}`} ref={scrollRef} onScroll={onScroll}>
+      {playing && (
+        <div className="story-metric">
+          <div className="sm-year">{metricYear}</div>
+          <div className="sm-val">{fmt$k(metricVal)}<span>/yr in tax savings</span></div>
+          <div className="sm-bar"><span style={{ width: `${(metricVal / (meta.savingsByYear[String(rollYear)] || 1)) * 100}%` }} /></div>
+        </div>
+      )}
+      <div className="story2-scroll">
+        <div className="story2-intro">
+          <h1>The SF Property Tax Gap</h1>
+          <p>Who pays less, who pays full price, and why. Scroll to begin, or skip to the map.</p>
+          <button className="ghost story-skip" onClick={onExplore}>Skip to the map →</button>
+        </div>
+        {STORY_STEPS.map((s, i) => (
+          <div
+            key={i}
+            data-i={i}
+            ref={(el) => { refs.current[i] = el; }}
+            className={`story2-step ${active === i ? 'on' : ''}`}
+          >
+            <div className="story2-card">
+              <div className="story2-kicker">{s.kicker}</div>
+              <h2>{s.title}</h2>
+              <p>{s.body}</p>
+              {i === STORY_STEPS.length - 1 && (
+                <button className="story-next" onClick={onExplore}>Explore the map →</button>
+              )}
+            </div>
+          </div>
+        ))}
+        <div className="story2-end">
+          <p>{meta.parcelCount.toLocaleString()} parcels · data as of {meta.sourceDataAsOf ?? '—'}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StreetComparison({
+  sel,
+  chunkVersion,
+  chunks,
+}: {
+  sel: ParcelProps;
+  chunkVersion: number;
+  chunks: globalThis.Map<string, ChunkEntry>;
+}) {
+  const stats = useMemo(() => {
+    void chunkVersion;
+    if (!sel.street) return null;
+    let feats: Feature[] | null = null;
+    for (const entry of chunks.values()) {
+      if (entry.all.length && entry.all[0].properties.nbhd === sel.nbhd) {
+        feats = entry.all;
+        break;
+      }
+    }
+    if (!feats) return null;
+    const byStreet = new globalThis.Map<string, ParcelProps[]>();
+    for (const f of feats) {
+      const st = f.properties.street;
+      if (!st || f.properties.ratio == null) continue;
+      let a = byStreet.get(st);
+      if (!a) {
+        a = [];
+        byStreet.set(st, a);
+      }
+      a.push(f.properties);
+    }
+    const mine = byStreet.get(sel.street) ?? [];
+    if (mine.length < 3) return null;
+    const med = median(mine.map((p) => p.ratio!).sort((a, b) => a - b));
+    const avgSav = mine.reduce((s, p) => s + (p.savings ?? 0), 0) / mine.length;
+    const rank = sel.ratio != null ? mine.filter((p) => p.ratio! < sel.ratio!).length + 1 : null;
+    const nearby: { street: string; median: number; n: number }[] = [];
+    for (const [st, arr] of byStreet) {
+      if (st === sel.street || arr.length < 5) continue;
+      nearby.push({ street: st, median: median(arr.map((p) => p.ratio!).sort((a, b) => a - b)), n: arr.length });
+    }
+    nearby.sort((a, b) => a.median - b.median);
+    return { n: mine.length, median: med, avgSav, rank, deepest: nearby.slice(0, 3) };
+  }, [sel, chunkVersion, chunks]);
+
+  if (!stats || !sel.street) return null;
+  return (
+    <>
+      <h3>Your street</h3>
+      <div className="street-box">
+        <div>
+          <b>{sel.street}</b>: {stats.n} properties · median taxed at {Math.round(stats.median * 100)}% of
+          value · avg ≈ {fmt$k(stats.avgSav)}/yr saved
+        </div>
+        {stats.rank != null && (
+          <div className="street-rank">
+            this property has the #{stats.rank} lowest tax basis of {stats.n} on the street
+          </div>
+        )}
+        {stats.deepest.length > 0 && (
+          <div className="street-nearby">
+            deepest-subsidy streets in {sel.nbhd}:{' '}
+            {stats.deepest.map((d) => `${d.street} (${Math.round(d.median * 100)}%)`).join(' · ')}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function SavingsChart({ data, caption }: { data: Record<string, number>; caption?: string }) {
+  const years = Object.keys(data).map(Number).sort((a, b) => a - b);
+  if (years.length < 2) return null;
+  const w = 292, h = 84, pad = 8;
+  const vals = years.map((y) => data[String(y)]);
+  const maxV = Math.max(...vals, 1);
+  const x = (i: number) => pad + (i / (years.length - 1)) * (w - 2 * pad);
+  const y = (v: number) => h - pad - (v / maxV) * (h - 2 * pad - 14);
+  const line = vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const area = `${line} L${x(vals.length - 1).toFixed(1)},${h - pad} L${x(0).toFixed(1)},${h - pad} Z`;
+  return (
+    <div className="savings-chart">
+      <svg width={w} height={h}>
+        <path d={area} className="savings-area" />
+        <path d={line} className="savings-line" />
+        <text x={w - pad} y={y(vals[vals.length - 1]) - 5} textAnchor="end" className="chart-label">
+          {fmt$k(vals[vals.length - 1])}/yr
+        </text>
+        <text x={pad} y={h - 12} className="chart-label">{years[0]}</text>
+        <text x={w - pad} y={h - 12} textAnchor="end" className="chart-label">{years[years.length - 1]}</text>
+      </svg>
+      {caption !== '' && (
+        <div className="legend-note">{caption ?? 'citywide est. tax savings by year · early years understated'}</div>
+      )}
+    </div>
+  );
+}

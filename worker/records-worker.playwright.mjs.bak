@@ -1,0 +1,237 @@
+// On-demand SF Recorder lookup worker.
+//
+// Sits behind the app's RECORDS_API hook. Given a parcel APN (block+lot), it
+// drives the county's public index search (recorder.sfgov.org) through a real
+// browser — accept the disclaimer once, fill Block + Lot, read the results —
+// and caches the result per APN forever so each parcel is fetched at most once.
+//
+// This is deliberately ONE LOOKUP AT A TIME at human scale, not a bulk crawler:
+// the index is open (no CAPTCHA, no login, terms don't forbid it) but the site
+// is built around its UI + a per-session key, so we use the UI as a person would.
+// For full-coverage owner data, ingest the bulk §408.1 / PRA roll via deeds.py
+// instead of pointing this at all 207k parcels.
+//
+// Run:  cd worker && npm install && npx playwright install chromium && node records-worker.mjs
+// Then set RECORDS_API in web/src/App.tsx to  http://localhost:8788/records
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
+
+const DIR = path.dirname(fileURLToPath(import.meta.url));
+const CACHE_DIR = path.join(DIR, 'cache');
+const PORT = process.env.PORT || 8788;
+const MIN_INTERVAL_MS = 3000; // be polite: at most one live fetch every few seconds
+const BASE = 'https://recorder.sfgov.org/';
+
+fs.mkdirSync(CACHE_DIR, { recursive: true });
+
+// Order matters: liens/loans/reconveyances first so "DEED OF TRUST" (a mortgage,
+// which contains the word "deed") is never mistaken for an ownership transfer.
+const NON_TRANSFER = /deed of trust|reconvey|\blien\b|release|notice|\bntc\b|assignment|substitution|subordinat|modificat|abstract|judgment|\bufc\b|financing/i;
+const RELATIONAL = /trust transfer|interspousal|affidavit of death|quitclaim|\bgift\b|dissolution/i;
+const MARKET = /grant deed|warranty deed|\bdeed\b|trustee|corporation deed|individual deed/i;
+function deedKind(docType) {
+  const t = (docType || '').toLowerCase();
+  if (NON_TRANSFER.test(t)) return 'other';
+  if (RELATIONAL.test(t)) return 'relational';
+  if (MARKET.test(t)) return 'market';
+  return 'other';
+}
+
+// Split a Names cell ("(R) FOO\n(E) BAR\n(E) BAZ") into grantor/grantee lists.
+function parseNames(text) {
+  const grantors = [];
+  const grantees = [];
+  for (const raw of (text || '').split('\n')) {
+    const line = raw.trim();
+    const m = line.match(/^\(([RE])\)\s*(.+)$/);
+    if (!m) continue;
+    const name = m[2].replace(/^"|"$/g, '').trim();
+    if (m[1] === 'R') grantors.push(name);
+    else grantees.push(name);
+  }
+  return { grantors, grantees };
+}
+
+let browser, context, lastFetch = 0;
+let queue = Promise.resolve(); // serialize live fetches
+
+async function ensureBrowser() {
+  if (browser && browser.isConnected() && context) return;
+  try { await browser?.close(); } catch { /* ignore */ }
+  browser = await chromium.launch({ headless: process.env.HEADLESS !== '0' });
+  context = await browser.newContext({
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) sf-property-tax-gap/1.0',
+  });
+  // Ask the app's own (authenticated, filter-intact) search to return the whole
+  // record set in one shot: rewrite Rows=10 -> Rows=100 on its results request.
+  // This avoids the site's buggy Next-page / page-size controls, which drop the
+  // block/lot filter and pull in unrelated county-wide recordings.
+  await context.route(/GetSearchResults/i, (route) => {
+    try {
+      const u = new URL(route.request().url());
+      const rows = u.searchParams.get('Rows');
+      if (rows && rows !== '100') {
+        u.searchParams.set('Rows', '100');
+        return route.continue({ url: u.toString() });
+      }
+    } catch {
+      /* fall through */
+    }
+    return route.continue();
+  });
+  browser.on('disconnected', () => { browser = null; context = null; });
+}
+
+function cachePath(apn) {
+  return path.join(CACHE_DIR, `${apn.replace(/[^0-9A-Za-z]/g, '')}.json`);
+}
+
+async function scrapeParcel(apn) {
+  const clean = apn.replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+  const block = clean.slice(0, 4);
+  const lot = clean.slice(4);
+  await ensureBrowser();
+  const page = await context.newPage();
+  try {
+    await page.goto(BASE, { waitUntil: 'networkidle', timeout: 30000 });
+    // Accept the disclaimer (a fresh context shows it every time). There are two
+    // buttons here ("Accept & Login or Register" and "Agree"); we want "Agree".
+    const agree = page.getByRole('button', { name: 'Agree', exact: true });
+    await agree.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+    await agree.click({ timeout: 8000 }).catch(() => {});
+
+    // The search form (root URL) shows one visible Block + Lot field. Fill them.
+    const blockBox = page.locator('input[ng-model="SearchRequestModel.Block"]:visible');
+    const lotBox = page.locator('input[ng-model="SearchRequestModel.LowLot"]:visible');
+    await blockBox.first().waitFor({ state: 'visible', timeout: 20000 });
+    await blockBox.first().fill(block);
+    await lotBox.first().fill(lot);
+
+    // Trigger the real search (ng-click="Search();"), NOT the "Basic Search" toggle.
+    // Results render inline on the same page — no navigation — via an authenticated
+    // request the AngularJS app signs with its per-session key, so we read the DOM.
+    await page.locator('button[ng-click="Search();"]').first().click();
+
+    // Wait until either the results grid has rows or a "no records" state settles.
+    await page
+      .waitForFunction(() => {
+        const grid = [...document.querySelectorAll('table')].find((t) => {
+          const h = [...t.querySelectorAll('th')].map((x) => x.innerText.trim()).join('|');
+          return /Document Number/i.test(h) && /Names/i.test(h);
+        });
+        const hasRows = grid && grid.querySelectorAll('tbody tr td').length > 0;
+        const empty = /No\s+Record|0\s+Documents/i.test(document.body.innerText);
+        return hasRows || empty;
+      }, { timeout: 25000 })
+      .catch(() => {});
+
+    // Scrape helper: the real results grid (table.scroll4), visible rows only,
+    // first cell must be a numeric document number (skips hidden ng-repeat templates).
+    const scrapeGrid = () =>
+      page.evaluate(() => {
+        const grid =
+          document.querySelector('table.scroll4') ||
+          [...document.querySelectorAll('table')].find((t) => {
+            const h = [...t.querySelectorAll('th')].map((x) => x.innerText.trim()).join('|');
+            return /Document Number/i.test(h) && /Names/i.test(h);
+          });
+        if (!grid) return [];
+        const out = [];
+        for (const tr of grid.querySelectorAll('tbody tr')) {
+          if (!tr.offsetParent) continue; // skip hidden template rows
+          const tds = tr.querySelectorAll('td');
+          if (tds.length < 4) continue;
+          const docNumber = tds[0].innerText.trim();
+          if (!/^\d{6,}$/.test(docNumber)) continue;
+          out.push({
+            docNumber,
+            date: tds[1].innerText.trim(),
+            docType: tds[2].innerText.trim(),
+            names: tds[3].innerText.trim(),
+          });
+        }
+        return out;
+      });
+    // The forced Rows=100 makes the app render the parcel's whole set on one page.
+    // Give it a beat to finish binding, then read every row once.
+    await page.waitForLoadState('networkidle').catch(() => {});
+    await page.waitForTimeout(1200);
+    const raw = await scrapeGrid();
+
+    // Normalize + dedupe by document number.
+    const seen = new Set();
+    const records = [];
+    for (const r of raw) {
+      if (!r.docNumber || seen.has(r.docNumber)) continue;
+      seen.add(r.docNumber);
+      const { grantors, grantees } = parseNames(r.names);
+      records.push({
+        docNumber: r.docNumber,
+        date: normDate(r.date),
+        docType: r.docType || null,
+        grantor: grantors.join('; ') || null,
+        grantee: grantees.join('; ') || null,
+        grantors,
+        grantees,
+        transferTax: null, // only on the paid document image; the index omits it
+        kind: deedKind(r.docType),
+      });
+    }
+    return records;
+  } catch (e) {
+    await page.screenshot({ path: path.join(DIR, 'last-error.png') }).catch(() => {});
+    fs.writeFileSync(path.join(DIR, 'last-error.txt'), `url=${page.url()}\n${e.stack || e}`);
+    throw e;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+function normDate(s) {
+  const m = (s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : (s || '').slice(0, 10);
+}
+
+async function lookup(apn) {
+  const cp = cachePath(apn);
+  if (fs.existsSync(cp)) return { cached: true, records: JSON.parse(fs.readFileSync(cp, 'utf8')) };
+  // serialize + rate limit live fetches
+  const run = queue.then(async () => {
+    const wait = Math.max(0, MIN_INTERVAL_MS - (Date.now() - lastFetch));
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    lastFetch = Date.now();
+    const records = await scrapeParcel(apn);
+    fs.writeFileSync(cp, JSON.stringify(records));
+    return records;
+  });
+  queue = run.catch(() => {}); // keep the chain alive on error
+  return { cached: false, records: await run };
+}
+
+const server = http.createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  if (url.pathname !== '/records') {
+    res.writeHead(404).end('not found');
+    return;
+  }
+  const apn = url.searchParams.get('apn');
+  if (!apn) {
+    res.writeHead(400).end(JSON.stringify({ error: 'apn required' }));
+    return;
+  }
+  try {
+    const { cached, records } = await lookup(apn);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ apn, cached, source: 'SF Recorder public index', records }));
+  } catch (e) {
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: String(e.message || e) }));
+  }
+});
+
+server.listen(PORT, () => console.log(`records-worker on http://localhost:${PORT}/records?apn=2992059`));
