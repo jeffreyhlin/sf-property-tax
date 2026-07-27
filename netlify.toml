@@ -1,0 +1,41 @@
+[build]
+  base    = "web"
+  command = "npm ci && npm run build"
+  publish = "web/dist"
+
+# Single-page app: every route renders index.html. Deep links like
+# /#p=2992059 are hash-based so they never hit the server, but this keeps
+# any future path-based route working.
+[[redirects]]
+  from = "/*"
+  to   = "/index.html"
+  status = 200
+
+# Generated map data and deed records are content-addressed by a yearly roll
+# rebuild rather than by filename hash, so cache them hard but let the HTML
+# revalidate. Bump the roll and the deploy replaces them.
+[[headers]]
+  for = "/data/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400, stale-while-revalidate=604800"
+
+[[headers]]
+  for = "/records/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400, stale-while-revalidate=604800"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

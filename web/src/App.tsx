@@ -62,8 +62,16 @@ const DONATE_URL = '';
 // — no login, no CAPTCHA on search — so the worker retrieves the full record set
 // on demand, one parcel at a time, and caches it. Set VITE_RECORDS_API to point at
 // a deployed worker; empty string forces demo mode (sample rows, clearly labeled).
+// Where deed records come from, in precedence order:
+//   1. VITE_RECORDS_API   a running worker (live lookups, or CACHE_ONLY)
+//   2. static files       /records/<apn>.json, written by worker/export-static.mjs
+// Dev defaults to the local worker so live lookups work while iterating. A
+// production build with no VITE_RECORDS_API uses the static export, so the
+// public site needs no backend and never sends traffic to the county.
 const RECORDS_API =
-  import.meta.env.VITE_RECORDS_API ?? 'http://localhost:8788/records';
+  import.meta.env.VITE_RECORDS_API ?? (import.meta.env.DEV ? 'http://localhost:8788/records' : '');
+const RECORDS_STATIC = import.meta.env.VITE_RECORDS_STATIC ?? '/records';
+const RECORDS_DEMO = import.meta.env.VITE_RECORDS_DEMO === '1';
 
 type DeedRecord = {
   date: string;        // recording date YYYY-MM-DD
@@ -506,9 +514,9 @@ export default function App() {
       setRecords({ status: 'idle' });
       return;
     }
-    // Only the persistent cache is trusted for REAL data; demo rows are cheap and
-    // must never be persisted (a stale demo entry would shadow real worker output).
-    const cached = RECORDS_API ? recordsCache.current.get(sel.id) : undefined;
+    // Real data is cached across sessions; demo rows never are, since a stale
+    // demo entry would shadow real records.
+    const cached = RECORDS_DEMO ? undefined : recordsCache.current.get(sel.id);
     if (cached) {
       setRecords({ status: 'done', demo: false, records: cached, fetchedAt: 'cached' });
       return;
@@ -517,18 +525,27 @@ export default function App() {
     setRecords({ status: 'loading' });
     const finish = (recs: DeedRecord[], miss = false) => {
       if (cancelled) return;
-      if (RECORDS_API && !miss) {
+      if (!RECORDS_DEMO && !miss) {
         recordsCache.current.set(sel.id, recs);
         localStorage.setItem('sfptg-records-v2', JSON.stringify([...recordsCache.current]));
       }
-      setRecords({ status: 'done', demo: !RECORDS_API, records: recs, fetchedAt: new Date().toISOString().slice(0, 10), miss });
+      setRecords({ status: 'done', demo: RECORDS_DEMO, records: recs, fetchedAt: new Date().toISOString().slice(0, 10), miss });
     };
-    if (!RECORDS_API) {
+    if (RECORDS_DEMO) {
       const t = setTimeout(() => finish(demoRecords(sel)), 1100); // simulate the lookup
       return () => { cancelled = true; clearTimeout(t); };
     }
-    fetch(`${RECORDS_API}?apn=${encodeURIComponent(sel.id)}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    const url = RECORDS_API
+      ? `${RECORDS_API}?apn=${encodeURIComponent(sel.id)}`
+      : `${RECORDS_STATIC}/${encodeURIComponent(sel.id.toUpperCase())}.json`;
+    fetch(url)
+      .then((r) => {
+        // A 404 from the static export means this parcel was never seeded, which
+        // is a miss rather than an error: the UI invites a county lookup instead.
+        if (r.status === 404) return { records: [], miss: true };
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((d) => finish(d.records ?? [], !!d.miss))
       .catch((e) => !cancelled && setRecords({ status: 'error', message: String(e.message || e) }));
     return () => { cancelled = true; };

@@ -1,8 +1,25 @@
 # Deploying
 
-Two pieces: a static site and a small records worker. The site works without the
-worker (the deed panel just falls back to a link to the county index), so you can
-ship the site first and add the worker later.
+**The public site is fully static. There is no server to run.**
+
+Under `CACHE_ONLY` the worker only reads JSON off disk, so for a public deployment
+there is nothing for it to compute. `worker/export-static.mjs` copies the warmed
+cache into `web/public/records/`, and a production build fetches
+`/records/<apn>.json` straight from the same host. One static deploy, no backend,
+no CORS, and no traffic to the county from your visitors.
+
+```bash
+cd worker && node seed-cache.mjs --all     # warm the cache (about 400 parcels)
+node export-static.mjs                     # -> web/public/records/, ~3.4MB
+cd ../web && npm ci && npm run build       # -> web/dist
+```
+
+Then drop `web/dist` on any static host. `netlify.toml` at the repo root already
+sets the build, the SPA redirect, and cache headers.
+
+The worker is still what warms the cache, and you can point the site at a running
+worker for live lookups by setting `VITE_RECORDS_API`. Sections 2 and 3 below cover
+that. Most deployments will not need it.
 
 ## Before you go public
 
