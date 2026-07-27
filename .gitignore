@@ -37,3 +37,6 @@ worker/last-result.txt
 # Street-watch subscribers. This is a list of real email addresses, so it stays
 # out of version control. Copy watches.example.json to watches.json to use it.
 pipeline/watches.json
+
+# Local Netlify folder
+.netlify

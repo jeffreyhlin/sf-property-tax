@@ -3,7 +3,22 @@
   command = "npm ci && npm run build"
   publish = "web/dist"
 
-# Single-page app: every route renders index.html. Deep links like
+# Data paths must 404 when a file is missing rather than fall through to the
+# SPA catch-all below. Netlify serves real files first and only applies these
+# when nothing matches, so an unseeded parcel returns a true 404 and the app
+# renders its "not looked up yet" state instead of choking on HTML.
+# These have to come BEFORE the catch-all, since rules match in order.
+[[redirects]]
+  from = "/records/*"
+  to   = "/records/:splat"
+  status = 404
+
+[[redirects]]
+  from = "/data/*"
+  to   = "/data/:splat"
+  status = 404
+
+# Single-page app: every other route renders index.html. Deep links like
 # /#p=2992059 are hash-based so they never hit the server, but this keeps
 # any future path-based route working.
 [[redirects]]

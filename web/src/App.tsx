@@ -16,7 +16,10 @@ import { SankeyView } from './SankeyView';
 // but not wired: MVTLayer needs a data source to activate tiling; see docs/proposals.md.
 // import { PMTilesLayer } from './pmtilesLayer';
 
-type ViewMode = 'explore' | 'story' | 'breakdown' | 'compare';
+// Two states, not four tabs. The story is a one-way funnel that releases you
+// into the map, and the map is where you stay. Breakdown is now a chapter
+// inside the story; compare is a tool layered over the map.
+type ViewMode = 'story' | 'explore';
 
 // Minimal lucide-style line icons (stroke = currentColor, no fill).
 const ICON_PATHS: Record<string, string> = {
@@ -31,6 +34,7 @@ const ICON_PATHS: Record<string, string> = {
   cube: 'M12 2 3 7v10l9 5 9-5V7l-9-5zM3 7l9 5 9-5M12 12v10',
   play: 'M6 4l14 8-14 8V4z',
   pause: 'M7 4h3v16H7zM14 4h3v16h-3z',
+  search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-3.4-3.4',
 };
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
@@ -489,6 +493,18 @@ export default function App() {
   const [boardTab, setBoardTab] = useState<'relational' | 'all'>('relational');
   const [boardCls, setBoardCls] = useState<'sfh' | 'multi'>('sfh');
   const [compareTab, setCompareTab] = useState<'neighborhoods' | 'parcels'>('neighborhoods');
+  // Rankings moved out of the old Compare tab: it is discovery, not comparison.
+  const [showRankings, setShowRankings] = useState(false);
+  // Compare is now a mode over the map. While it is on, clicking a parcel adds
+  // or removes it from the set instead of opening the detail panel.
+  const [compareMode, setCompareMode] = useState(false);
+  const [comparePicks, setComparePicks] = useState<string[]>([]);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [compareFull, setCompareFull] = useState(false);
+  const [compareData, setCompareData] = useState<Record<string, DeedRecord[]>>({});
+  const [audioOn, setAudioOn] = useState(false);
+  const MAX_COMPARE = 6;
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const [typeFilter, setTypeFilter] = useState<PropType>('all');
   const [nbhdRank, setNbhdRank] = useState<'total' | 'perParcel' | 'relational'>('total');
   const [transfersOnly, setTransfersOnly] = useState(true);
@@ -774,6 +790,90 @@ export default function App() {
     return m;
   }, [meta]);
 
+  // Turning compare on clears any open parcel so the map reads as a picker.
+  // Turning it off drops the selection and closes the report.
+  const toggleCompareMode = () => {
+    setCompareMode((on) => {
+      const next = !on;
+      if (next) setSelected(null);
+      else {
+        setComparePicks([]);
+        setCompareOpen(false);
+        setCompareFull(false);
+      }
+      return next;
+    });
+    setShowRankings(false);
+  };
+
+  // Pull deed records for anything in the compare set, reusing the same cache
+  // the parcel panel fills so a parcel is never fetched twice.
+  useEffect(() => {
+    if (!compareOpen) return;
+    let cancelled = false;
+    for (const id of comparePicks) {
+      if (compareData[id]) continue;
+      const cached = recordsCache.current.get(id);
+      if (cached) {
+        setCompareData((d) => ({ ...d, [id]: cached }));
+        continue;
+      }
+      const url = RECORDS_API
+        ? `${RECORDS_API}?apn=${encodeURIComponent(id)}`
+        : `${RECORDS_STATIC}/${encodeURIComponent(id.toUpperCase())}.json`;
+      fetch(url)
+        .then((r) => (r.status === 404 ? { records: [] } : r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+        .then((d) => {
+          if (cancelled) return;
+          const recs: DeedRecord[] = d.records ?? [];
+          recordsCache.current.set(id, recs);
+          setCompareData((prev) => ({ ...prev, [id]: recs }));
+        })
+        .catch(() => {});
+    }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareOpen, comparePicks.join()]);
+
+  // Audio guide. Museum-style narration that follows what you are looking at.
+  // Browser speech synthesis stands in for recorded voice.
+  const speak = useCallback((text: string) => {
+    if (!audioOn || typeof window === 'undefined' || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 0.97;
+    window.speechSynthesis.speak(u);
+  }, [audioOn]);
+
+  useEffect(() => {
+    if (!audioOn) window.speechSynthesis?.cancel();
+    else speak('Audio guide on. I will read each parcel as you open it.');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioOn]);
+
+  // Narrate a parcel when it is opened.
+  useEffect(() => {
+    if (!audioOn || !selected) return;
+    const p = selected;
+    const pct = p.ratio != null ? `${Math.round(p.ratio * 100)} percent of its estimated value` : 'an unknown share of its value';
+    speak(
+      `${p.addr}. Taxed at ${pct}. About ${fmt$(p.savings ?? 0)} a year less than a new buyer would owe.` +
+        (p.transferYear ? ` Its tax basis was set in ${p.transferYear}.` : ''),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id, audioOn]);
+
+  const replayStory = () => {
+    setCompareMode(false);
+    setComparePicks([]);
+    setCompareOpen(false);
+    setShowRankings(false);
+    setSelected(null);
+    setYear(null);
+    setView('story');
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
+
   const flyToMatch = (m: {
     id: string;
     nbhd: string;
@@ -853,8 +953,17 @@ export default function App() {
           getFillColor: (f) =>
             ratioColor(ratioAtYear(f.properties, year), f.properties.transferType === 'relational'),
           getLineColor: (f) =>
-            selected && f.properties.id === selected.id ? [61, 42, 20, 255] : [120, 100, 70, 45],
-          getLineWidth: (f) => (selected && f.properties.id === selected.id ? 3 : 0.5),
+            comparePicks.includes(f.properties.id)
+              ? [178, 80, 7, 255]
+              : selected && f.properties.id === selected.id
+                ? [61, 42, 20, 255]
+                : [120, 100, 70, 45],
+          getLineWidth: (f) =>
+            comparePicks.includes(f.properties.id)
+              ? 4
+              : selected && f.properties.id === selected.id
+                ? 3
+                : 0.5,
           lineWidthUnits: 'pixels',
           pickable: showParcels,
           autoHighlight: true,
@@ -862,13 +971,26 @@ export default function App() {
           onClick: (info: PickingInfo) => {
             pendingSelect.current = null;
             const f = info.object as Feature | null;
+            // In compare mode every parcel is a toggle rather than a selection.
+            if (compareMode) {
+              if (!f) return;
+              const id = f.properties.id;
+              setComparePicks((cur) =>
+                cur.includes(id)
+                  ? cur.filter((x) => x !== id)
+                  : cur.length >= MAX_COMPARE
+                    ? cur
+                    : [...cur, id],
+              );
+              return;
+            }
             selectedSlug.current = f ? slug : null;
             setSelected(f?.properties ?? null);
           },
           updateTriggers: {
             getFillColor: [year],
-            getLineColor: [selected?.id],
-            getLineWidth: [selected?.id],
+            getLineColor: [selected?.id, comparePicks.join()],
+            getLineWidth: [selected?.id, comparePicks.join()],
             getElevation: [extrude],
           },
         }),
@@ -930,33 +1052,34 @@ export default function App() {
   });
 
   const sel = selected;
-  const NAV: { id: ViewMode; label: string; icon: string }[] = [
-    { id: 'explore', label: 'Explore', icon: 'map' },
-    { id: 'story', label: 'Story', icon: 'story' },
-    { id: 'breakdown', label: 'Breakdown', icon: 'breakdown' },
-    { id: 'compare', label: 'Compare', icon: 'compare' },
-  ];
   return (
-    <div className={`app view-${view}`}>
-      {!embed && (
-        <nav className="railnav">
-          {NAV.map((n) => (
-            <button
-              key={n.id}
-              className={view === n.id ? 'on' : ''}
-              onClick={() => setView(n.id)}
-              title={n.label}
-              aria-label={n.label}
-            >
-              <Icon name={n.icon} />
-              <span className="rail-tip">{n.label}</span>
-            </button>
-          ))}
-          <span className="rail-sep" />
-          <button onClick={() => setShowAbout(true)} title="About & FAQ" aria-label="About">
-            <Icon name="info" />
-            <span className="rail-tip">About</span>
+    <div className={`app view-${view}${compareMode ? ' comparing' : ''}`}>
+      {/* No rail. Once the story releases you into the map, one dock carries
+          everything, and there is no way back into the funnel except Replay. */}
+      {!embed && view === 'explore' && (
+        <nav className="dock">
+          <button className="dock-primary" onClick={() => searchRef.current?.focus()}>
+            <Icon name="search" size={15} /> Search
           </button>
+          <button className={compareMode ? 'on' : ''} onClick={() => toggleCompareMode()}>
+            <Icon name="compare" size={15} /> Compare
+          </button>
+          <button className={showRankings ? 'on' : ''} onClick={() => setShowRankings((v) => !v)}>
+            <Icon name="breakdown" size={15} /> Rankings
+          </button>
+          <span className="dock-sep" />
+          <button
+            className={audioOn ? 'on audio' : 'audio'}
+            onClick={() => setAudioOn((v) => !v)}
+            title={audioOn ? 'Turn the audio guide off' : 'Read parcels aloud as you explore'}
+          >
+            <span className="audio-dot" /> Audio
+          </button>
+          <span className="dock-sep" />
+          <button onClick={() => setShowAbout(true)} title="About & FAQ" aria-label="About">
+            <Icon name="info" size={15} />
+          </button>
+          <button onClick={replayStory} title="Replay the story" aria-label="Replay the story">↺</button>
         </nav>
       )}
 
@@ -1008,9 +1131,8 @@ export default function App() {
         />
       )}
 
-      {view === 'breakdown' && meta && (
-        <SankeyView flows={meta.sankey} onExplore={() => setView('explore')} />
-      )}
+      {/* Breakdown is no longer a destination. The Sankey is a chapter inside
+          the story, rendered by StoryScroller at the "where it sits" beat. */}
 
       {view === 'explore' && (
       <header className="topbar">
@@ -1024,6 +1146,7 @@ export default function App() {
         </div>
         <div className="search">
           <input
+            ref={searchRef}
             placeholder="Search address… (e.g. 500 CHURCH)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -1031,8 +1154,40 @@ export default function App() {
           {matches.length > 0 && (
             <ul className="results">
               {matches.map((m) => (
-                <li key={m.id} onClick={() => flyToMatch(m)}>
+                <li
+                  key={m.id}
+                  onClick={() => {
+                    // While comparing, search adds to the set instead of
+                    // opening the parcel. Still fly there so you see it land.
+                    if (compareMode) {
+                      setComparePicks((c) =>
+                        c.includes(m.id) || c.length >= MAX_COMPARE ? c : [...c, m.id],
+                      );
+                      setQuery('');
+                      // The report reads parcels out of byId, which is only
+                      // filled once a neighborhood chunk loads. Request it
+                      // explicitly rather than waiting for the viewport to.
+                      if (!byId.current.has(m.id)) {
+                        const slug = slugByName.get(m.nbhd);
+                        if (slug) loadChunk(slug);
+                      }
+                      if (m.x != null && m.y != null) {
+                        setViewState((v) => ({
+                          ...v,
+                          longitude: m.x!,
+                          latitude: m.y!,
+                          zoom: Math.max(v.zoom, 15),
+                          transitionDuration: 700,
+                          transitionInterpolator: new FlyToInterpolator(),
+                        }));
+                      }
+                      return;
+                    }
+                    flyToMatch(m);
+                  }}
+                >
                   <b>{m.addr}</b> <span>{m.nbhd}</span>
+                  {compareMode && <em className="res-add">add</em>}
                 </li>
               ))}
             </ul>
@@ -1163,8 +1318,9 @@ export default function App() {
       </div>
       )}
 
-      {view === 'compare' && meta && (
-        <div className="compare-view">
+      {showRankings && meta && view === 'explore' && (
+        <div className="rankings">
+          <button className="rankings-close" onClick={() => setShowRankings(false)} aria-label="Close rankings">&times;</button>
           <div className="compare-head">
             <div className="compare-tabs">
               <button className={compareTab === 'neighborhoods' ? 'on' : ''} onClick={() => setCompareTab('neighborhoods')}>
@@ -1206,7 +1362,7 @@ export default function App() {
                   key={n.slug}
                   className="nb-card"
                   onClick={() => {
-                    setView('explore');
+                    setShowRankings(false);
                     flyToNbhd(n);
                   }}
                 >
@@ -1237,7 +1393,7 @@ export default function App() {
                       key={r.id}
                       className="parcel-row"
                       onClick={() => {
-                        setView('explore');
+                        setShowRankings(false);
                         flyToMatch({
                           id: r.id,
                           nbhd: r.nbhd,
@@ -1262,7 +1418,53 @@ export default function App() {
         </div>
       )}
 
-      {view === 'explore' && sel && (
+      {/* Compare tool: a tray over the map while picking, then a report that
+          docks to the side and can expand to full screen. */}
+      {view === 'explore' && compareMode && !embed && (
+        <div className="cmp-tray">
+          <span className="cmp-mode"><span className="dot" /> Compare</span>
+          <span className="cmp-count">{comparePicks.length} of {MAX_COMPARE}</span>
+          <div className="cmp-chips">
+            {comparePicks.map((id) => {
+              const p = byId.current.get(id)?.properties;
+              return (
+                <span className="cmp-chip" key={id}>
+                  {p?.addr ?? id}
+                  <button
+                    onClick={() => setComparePicks((c) => c.filter((x) => x !== id))}
+                    aria-label={`Remove ${p?.addr ?? id}`}
+                  >
+                    &times;
+                  </button>
+                </span>
+              );
+            })}
+            {!comparePicks.length && <span className="cmp-hint">Tap parcels on the map, or search an address</span>}
+          </div>
+          <button
+            className="cmp-go"
+            disabled={comparePicks.length < 2}
+            onClick={() => setCompareOpen(true)}
+          >
+            {comparePicks.length >= 2 ? `Compare ${comparePicks.length}` : 'Pick two or more'}
+          </button>
+          <button className="cmp-exit" onClick={toggleCompareMode} aria-label="Leave compare mode">&times;</button>
+        </div>
+      )}
+
+      {view === 'explore' && compareOpen && comparePicks.length >= 2 && (
+        <CompareReport
+          ids={comparePicks}
+          byId={byId.current}
+          records={compareData}
+          full={compareFull}
+          onToggleFull={() => setCompareFull((v) => !v)}
+          onClose={() => setCompareOpen(false)}
+          onRemove={(id) => setComparePicks((c) => c.filter((x) => x !== id))}
+        />
+      )}
+
+      {view === 'explore' && sel && !compareMode && (
         <aside className="panel">
           <button
             className="close"
@@ -1642,49 +1844,75 @@ type StoryStep = {
   parcel?: { id: string; nbhd: string };
   transfersOnly?: boolean;
   year?: number | null;
-  play?: boolean; // auto-animate 2007 -> latest with a live metric
+  play?: boolean;   // auto-animate 2007 -> latest with a live metric
+  sankey?: boolean; // render the breakdown inline, as a chapter
+  skip?: boolean;   // offer the escape hatch under this step's copy
+  narration?: string; // what the audio guide reads for this beat
 };
 
 const STORY_STEPS: StoryStep[] = [
   {
-    kicker: 'San Francisco',
-    title: 'Two homes on the same block, wildly different tax bills',
-    body: 'One family bought decades ago. Their neighbor bought last year. They can owe ten times more in property tax for a nearly identical house. This is the map of that gap, block by block.',
+    kicker: 'SF Property Tax Gap',
+    title: 'Two homes on one block, ten times the tax',
+    body: 'One family bought decades ago. Their neighbor bought last year. For nearly identical houses, the newer owner can owe ten times more property tax. This is a map of that gap across all 207,000 parcels in San Francisco.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 11.4, pitch: 42, bearing: 0 },
+    skip: true,
+    narration:
+      'One family bought decades ago. Their neighbor bought last year. For nearly identical houses, the newer owner can owe ten times more property tax. This is a map of that gap across every parcel in San Francisco.',
   },
   {
     kicker: 'How Prop 13 works',
-    title: 'Taxed on what you paid, not what it\'s worth',
-    body: 'Since 1978, California taxes a home on its purchase price, rising at most 2% a year, until it sells again. Prices have far outrun 2%, so the longer you own, the wider the gap between your tax bill and the home\'s real value.',
+    title: 'Taxed on what you paid, not what it is worth',
+    body: 'Since 1978, California taxes a home on its purchase price, rising at most 2% a year, until it sells again. Prices have far outrun 2%. Hold a home for thirty years and the difference between your bill and a new buyer’s bill grows very large.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 11.6, pitch: 45, bearing: 15 },
+    skip: true,
+    narration:
+      'Since 1978, California taxes a home on its purchase price, rising at most two percent a year, until it sells again. Prices have far outrun two percent, so the longer you hold, the wider the gap.',
   },
   {
     kicker: 'The citywide picture',
-    title: 'About $2 billion a year in tax savings',
-    body: 'Each 3D block is a neighborhood; taller and darker means a bigger gap. Sunset, the Richmond, and West of Twin Peaks tower, older, long-held, single-family neighborhoods where the gap has compounded for decades.',
+    title: 'About $2 billion a year',
+    body: 'Each block is a neighborhood, and taller and darker means a bigger gap. The Sunset, the Richmond, and West of Twin Peaks tower over the rest: older, long-held, single-family areas where the gap has compounded for decades.',
     view: { longitude: -122.4525, latitude: 37.752, zoom: 11.7, pitch: 50, bearing: -10 },
+    narration:
+      'Each block here is a neighborhood. Taller and darker means a bigger gap. The Sunset, the Richmond, and West of Twin Peaks tower over the rest.',
   },
   {
     kicker: 'It compounds',
-    title: 'Watch the gap widen since 2007',
-    body: 'Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners held, the gap, and the yearly savings, grew. The blocks rise in real time.',
+    title: 'The gap since 2007',
+    body: 'Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners stayed put, the yearly savings grew with them. The blocks rise in real time.',
     view: { longitude: -122.4525, latitude: 37.752, zoom: 11.7, pitch: 50, bearing: -10 },
     play: true,
+    narration:
+      'Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners stayed put, the yearly savings grew with them.',
   },
   {
-    kicker: 'It can pass in the family',
-    title: 'When the low tax basis is inherited',
-    body: 'A sale normally resets the tax. But parent-to-child, spousal, and trust transfers are exempt: the home changes hands and the old, low tax passes with it. This West of Twin Peaks house passed within a family in 2011 and is still taxed on 29% of its value — about $65,000 a year less than a new buyer would owe, roughly $690,000 kept since.',
+    kicker: 'Where the $2B sits',
+    title: 'Mostly people who never left',
+    body: 'Three quarters of the gap belongs to owners who have simply held since before 2007. Long ownership is the subsidy. A much smaller slice traces to transfers that changed hands without triggering a reassessment.',
+    view: { longitude: -122.4525, latitude: 37.752, zoom: 11.5, pitch: 35, bearing: 0 },
+    sankey: true,
+    narration:
+      'Three quarters of the gap belongs to owners who have simply held since before 2007. Long ownership is the subsidy. A smaller slice traces to transfers that avoided a reassessment.',
+  },
+  {
+    kicker: 'One house',
+    title: '247 Lansdale Ave',
+    body: 'This West of Twin Peaks house changed hands in 2011 without a reassessment, and is still taxed on 29% of what it is worth. That is about $65,000 a year less than a new buyer would owe, and roughly $690,000 kept since. The county recorder lists every deed on it, names included.',
     view: { longitude: -122.4594, latitude: 37.7366, zoom: 16.5, pitch: 30, bearing: 0 },
     parcel: { id: '2992059', nbhd: 'West of Twin Peaks' },
     year: null,
+    narration:
+      'This house changed hands in 2011 without a reassessment. It is still taxed on 29 percent of what it is worth, about 65 thousand dollars a year less than a new buyer would owe.',
   },
   {
-    kicker: 'Now explore',
-    title: 'Find your block',
-    body: 'Search any address, filter by property type, scrub the years, or open the Breakdown to see where the $2 billion sits. Long ownership accounts for most of it. Transfers that skipped a reassessment are a small slice.',
+    kicker: 'Your turn',
+    title: 'Now look up your street',
+    body: 'The map is yours from here. Search an address, tap any parcel to see two decades of its taxes and every recorded deed, or turn on Compare to line up your block against a neighbor’s.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 12, pitch: 40, bearing: 0 },
     transfersOnly: true,
+    narration:
+      'The map is yours from here. Search an address, tap any parcel, or turn on Compare to line up your block against a neighbor’s.',
   },
 ];
 
@@ -1784,30 +2012,215 @@ function StoryScroller({
         </div>
       )}
       <div className="story2-scroll">
-        <div className="story2-intro">
-          <h1>The SF Property Tax Gap</h1>
-          <p>Who pays less, who pays full price, and why. Scroll to begin, or skip to the map.</p>
-          <button className="ghost story-skip" onClick={onExplore}>Skip to the map →</button>
-        </div>
         {STORY_STEPS.map((s, i) => (
           <div
             key={i}
             data-i={i}
             ref={(el) => { refs.current[i] = el; }}
-            className={`story2-step ${active === i ? 'on' : ''}`}
+            className={`story2-step ${active === i ? 'on' : ''} ${i < active ? 'past' : ''}`}
           >
+            {/* No card: the copy sits straight on the page background and
+                cross-fades, so the map reads as one continuous surface. */}
             <div className="story2-card">
               <div className="story2-kicker">{s.kicker}</div>
               <h2>{s.title}</h2>
               <p>{s.body}</p>
+              {s.sankey && (
+                <div className="story-sankey">
+                  <SankeyView flows={meta.sankey} compact />
+                </div>
+              )}
+              {s.skip && (
+                <button className="skiplink" onClick={onExplore}>
+                  Skip to the map <span className="arr">↓</span>
+                </button>
+              )}
               {i === STORY_STEPS.length - 1 && (
-                <button className="story-next" onClick={onExplore}>Explore the map →</button>
+                <button className="story-next" onClick={onExplore}>Open the map →</button>
               )}
             </div>
           </div>
         ))}
         <div className="story2-end">
           <p>{meta.parcelCount.toLocaleString()} parcels · data as of {meta.sourceDataAsOf ?? '—'}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Generated comparison report. Leads with the spread, explains each parcel's
+// mechanism, then surfaces what the deed records make notable. Written to avoid
+// the patterns in petergyang/no-ai-slop: no "not X but Y", no colon reveals,
+// no dramatic fragments, no closing aphorism.
+function CompareReport({
+  ids,
+  byId,
+  records,
+  full,
+  onToggleFull,
+  onClose,
+  onRemove,
+}: {
+  ids: string[];
+  byId: globalThis.Map<string, Feature>;
+  records: Record<string, DeedRecord[]>;
+  full: boolean;
+  onToggleFull: () => void;
+  onClose: () => void;
+  onRemove: (id: string) => void;
+}) {
+  // Parcels only live in byId once their neighborhood chunk has loaded. Say so
+  // rather than quietly dropping a pick the reader deliberately made.
+  const items = ids.map((id) => byId.get(id)?.properties).filter(Boolean) as ParcelProps[];
+  const pending = ids.length - items.length;
+  if (items.length < 2) {
+    return (
+      <div className="cmp-result cmp-side">
+        <div className="cmp-head">
+          <h2>Comparison</h2>
+          <button className="cmp-close" onClick={onClose} aria-label="Close comparison">&times;</button>
+        </div>
+        <div className="cmp-body">
+          <p className="cmp-note" style={{ marginTop: 16 }}>
+            Loading {pending} parcel{pending === 1 ? '' : 's'}. Pan the map near them and they will
+            appear here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const bySav = [...items].sort((a, b) => (b.savings ?? 0) - (a.savings ?? 0));
+  const top = bySav[0];
+  const bot = bySav[bySav.length - 1];
+  const gap = (top.savings ?? 0) - (bot.savings ?? 0);
+  const sameStreet = new Set(items.map((i) => i.street)).size === 1 && !!top.street;
+
+  const basisOf = (p: ParcelProps) => p.transferYear ?? p.basisYear ?? null;
+  // One clause covering both the year and the cause, so a parcel with no
+  // recorded reset does not read as "set in 2007 by ownership since before 2007".
+  const originOf = (p: ParcelProps) => {
+    const y = basisOf(p);
+    if (p.transferType === 'relational')
+      return `Basis set in ${y} by a transfer that did not trigger a reassessment.`;
+    if (p.transferType === 'market') return `Basis reset in ${y} by a market sale.`;
+    if (p.transferType === 'partial') return `Partly reassessed in ${y}.`;
+    return 'Held with no reset on record since 2007.';
+  };
+
+  // Only claim what the recorded documents actually support.
+  const notes: string[] = [];
+  for (const p of items) {
+    const recs = records[p.id];
+    if (!recs?.length) continue;
+    const fam = recs.find((r) => r.kind === 'relational');
+    if (fam && fam.grantor && fam.grantee) {
+      notes.push(
+        `${p.addr}: the recorder shows ${fam.grantor} to ${fam.grantee} in ${String(fam.date).slice(0, 4)}, a transfer between related parties.`,
+      );
+    }
+  }
+  if (sameStreet && gap > 0) {
+    notes.push(`${top.addr} and ${bot.addr} sit on the same street and are ${fmt$(gap)} a year apart.`);
+  }
+
+  const deeds = (p: ParcelProps) => {
+    const recs = records[p.id];
+    if (!recs) return <p className="cmp-nodeeds">Open this parcel to load its recorded documents.</p>;
+    if (!recs.length) return <p className="cmp-nodeeds">No documents recorded since 1990.</p>;
+    return (
+      <ul className="rec-list">
+        {recs.slice(0, 8).map((r, i) => (
+          <li key={r.docNumber ?? i}>
+            <span className="rec-date">{String(r.date).slice(0, 4)}</span>
+            <span className="rec-doc">
+              <span className="rec-doctype">
+                {r.docType}
+                {r.kind === 'market' && <em className="rec-tag rec-market"> transfer</em>}
+                {r.kind === 'relational' && <em className="rec-tag rec-exempt"> related parties</em>}
+              </span>
+              {(r.grantor || r.grantee) && (
+                <span className="rec-names">
+                  <span className="rec-party">{r.grantor || '—'}</span>
+                  <span className="rec-arrow"> → </span>
+                  <span className="rec-party">{r.grantee || '—'}</span>
+                </span>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
+  return (
+    <div className={`cmp-result ${full ? 'cmp-fullscreen' : 'cmp-side'}`}>
+      <div className="cmp-head">
+        <h2>Comparison</h2>
+        <div className="segmented cmp-seg">
+          <button className={!full ? 'on' : ''} onClick={() => full && onToggleFull()}>Panel</button>
+          <button className={full ? 'on' : ''} onClick={() => !full && onToggleFull()}>Full screen</button>
+        </div>
+        <button className="cmp-close" onClick={onClose} aria-label="Close comparison">&times;</button>
+      </div>
+
+      <div className="cmp-body">
+        <div className="cmp-report">
+          <div className="cmp-meta">
+            Comparison report · {items.length} parcels
+            {pending > 0 && ` · ${pending} still loading`}
+          </div>
+          <p className="cmp-lede">
+            <b>{top.addr}</b> keeps <b>{fmt$(top.savings ?? 0)} a year</b> that a new buyer would owe.{' '}
+            {bot.addr} keeps {fmt$(bot.savings ?? 0)}.{' '}
+            {gap > 0 && (
+              <>
+                The {fmt$(gap)} difference sits between properties this model values at{' '}
+                {fmt$k(top.estMarket ?? 0)} and {fmt$k(bot.estMarket ?? 0)}.
+              </>
+            )}
+          </p>
+
+          <h4>Why each pays what it pays</h4>
+          <ul className="cmp-why">
+            {bySav.map((p) => (
+              <li key={p.id}>
+                <b>{p.addr}.</b> {originOf(p)}{' '}
+                Taxed at {p.ratio != null ? Math.round(p.ratio * 100) : '—'}% of estimated value,{' '}
+                {fmt$(p.taxEst ?? 0)} against {fmt$((p.taxEst ?? 0) + (p.savings ?? 0))} for a new buyer.
+              </li>
+            ))}
+          </ul>
+
+          {notes.length > 0 && (
+            <>
+              <h4>From the records</h4>
+              {notes.map((n, i) => <p key={i} className="cmp-note">{n}</p>)}
+            </>
+          )}
+        </div>
+
+        <div className="cmp-cols">
+          {bySav.map((p) => (
+            <div className="cmp-col" key={p.id}>
+              <div className="cmp-col-head">
+                <div>
+                  <h3>{p.addr}</h3>
+                  <div className="cmp-sub">{p.nbhd} · {p.use}</div>
+                </div>
+                <button onClick={() => onRemove(p.id)} aria-label={`Remove ${p.addr}`}>&times;</button>
+              </div>
+              <div className="cmp-big">{fmt$(p.savings ?? 0)}<small>saved per year</small></div>
+              <div className="cmp-spec"><span>Assessed</span><span>{fmt$k(p.assessed)}</span></div>
+              <div className="cmp-spec"><span>Est. market</span><span>{p.estMarket ? fmt$k(p.estMarket) : '—'}</span></div>
+              <div className="cmp-spec"><span>Tax today</span><span>{fmt$(p.taxEst ?? 0)}</span></div>
+              <div className="cmp-spec"><span>Share of value</span><span>{p.ratio != null ? `${Math.round(p.ratio * 100)}%` : '—'}</span></div>
+              <div className="cmp-spec"><span>Basis set</span><span>{basisOf(p) ?? 'before 2007'}</span></div>
+              <h4 className="cmp-deedhead">Recorded documents</h4>
+              {deeds(p)}
+            </div>
+          ))}
         </div>
       </div>
     </div>

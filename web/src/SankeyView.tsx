@@ -18,7 +18,15 @@ const ORIGIN_NOTE: Record<string, string> = {
 };
 const ORDER = ['prehold', 'market', 'relational'] as const;
 
-export function SankeyView({ flows, onExplore }: { flows: SankeyFlow[]; onExplore: () => void }) {
+export function SankeyView({
+  flows,
+  onExplore,
+  compact = false,
+}: {
+  flows: SankeyFlow[];
+  onExplore?: () => void;
+  compact?: boolean;
+}) {
   const W = 1040, H = 520, padY = 46, colGap = 8;
   const total = flows.reduce((s, f) => s + f.savings, 0);
   if (!total) return null;
@@ -131,15 +139,15 @@ export function SankeyView({ flows, onExplore }: { flows: SankeyFlow[]; onExplor
   );
 
   return (
-    <div className="sankey-view">
-      <div className="sankey-head">
+    <div className={`sankey-view${compact ? ' compact' : ''}`}>
+      {!compact && <div className="sankey-head">
         <h2>Where the ${(total / 1e9).toFixed(1)} billion a year goes</h2>
         <p>
           Every dollar of estimated annual property-tax savings, traced from the citywide total, to the kind
           of property, to how that low tax basis came to be. Commercial property is excluded (no reliable
           market estimate).
         </p>
-      </div>
+      </div>}
       <div className="sankey-scroll">
         <svg viewBox={`0 0 ${W} ${H}`} className="sankey-svg" preserveAspectRatio="xMidYMid meet">
           {links}
@@ -160,9 +168,9 @@ export function SankeyView({ flows, onExplore }: { flows: SankeyFlow[]; onExplor
           </div>
         ))}
       </div>
-      <button className="story-next sankey-explore" onClick={onExplore}>
+      {!compact && onExplore && <button className="story-next sankey-explore" onClick={onExplore}>
         Explore the map →
-      </button>
+      </button>}
     </div>
   );
 }
