@@ -14,6 +14,11 @@ node export-static.mjs                     # -> web/public/records/, ~3.4MB
 cd ../web && npm ci && npm run build       # -> web/dist
 ```
 
+The audio guide is optional and works without this, falling back to browser
+speech synthesis. To ship recorded narration instead, run `worker/gen-voice.mjs`
+before building; see `voice.md`. Do not commit placeholder or silent MP3s — the
+app treats the presence of `audio/manifest.json` as proof a real take exists.
+
 Then drop `web/dist` on any static host. `netlify.toml` at the repo root already
 sets the build, the SPA redirect, and cache headers.
 

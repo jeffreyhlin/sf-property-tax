@@ -26,6 +26,11 @@ type Manifest = { voiceId: string; beats: Record<string, { hash: string }> };
 let manifest: Manifest | null | undefined;
 let manifestPromise: Promise<Manifest | null> | null = null;
 let current: HTMLAudioElement | null = null;
+// Bumped by every narrate()/stop, so a call that resumes after an await can
+// tell it has been superseded. Without it, scrolling quickly through beats
+// starts one audio element per beat and they all play over each other — the
+// manifest fetch on the first call makes that window wide.
+let generation = 0;
 
 const AUDIO_BASE = import.meta.env.VITE_AUDIO_BASE ?? '/audio';
 
@@ -55,6 +60,7 @@ export function primeNarration(): void {
 }
 
 export function stopNarration(): void {
+  generation++;
   if (current) {
     current.pause();
     current = null;
@@ -79,8 +85,10 @@ export async function narrate(id: string): Promise<void> {
   const text = NARRATION[id];
   if (!text) return;
   stopNarration();
+  const mine = generation;
 
   const m = await loadManifest();
+  if (mine !== generation) return; // a later beat took over while we waited
   if (!m?.beats?.[id]) {
     speechFallback(text);
     return;
@@ -90,10 +98,16 @@ export async function narrate(id: string): Promise<void> {
   current = el;
   try {
     await el.play();
+    // play() resolves once playback has actually begun, by which point a newer
+    // beat may have started and cleared `current`. Stop this one if so.
+    if (mine !== generation) {
+      el.pause();
+      if (current === el) current = null;
+    }
   } catch {
-    // Autoplay blocked or the file is missing despite the manifest.
+    // Autoplay blocked, or the file is missing despite the manifest.
     if (current === el) current = null;
-    speechFallback(text);
+    if (mine === generation) speechFallback(text);
   }
 }
 
