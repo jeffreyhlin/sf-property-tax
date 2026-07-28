@@ -1,7 +1,17 @@
+# Everything here is relative to the repo root. Setting `base = "web"` instead
+# would put the function outside it, and it also made `publish` resolve to
+# web/web/dist — harmless only because deploys upload a prebuilt directory.
 [build]
-  base    = "web"
-  command = "npm ci && npm run build"
+  command = "cd web && npm ci && npm run build"
   publish = "web/dist"
+
+# On-demand deed lookups. The function imports the recorder client that the
+# worker and the export scripts also use, so there is one implementation and
+# three callers rather than three copies to keep in step.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  included_files = ["worker/recorder-api.mjs"]
 
 # Data paths must 404 when a file is missing rather than fall through to the
 # SPA catch-all below. Netlify serves real files first and only applies these

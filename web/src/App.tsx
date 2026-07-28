@@ -68,14 +68,19 @@ const DONATE_URL = '';
 // on demand, one parcel at a time, and caches it. Set VITE_RECORDS_API to point at
 // a deployed worker; empty string forces demo mode (sample rows, clearly labeled).
 // Where deed records come from, in precedence order:
-//   1. VITE_RECORDS_API   a running worker (live lookups, or CACHE_ONLY)
-//   2. static files       /records/<apn>.json, written by worker/export-static.mjs
-// Dev defaults to the local worker so live lookups work while iterating. A
-// production build with no VITE_RECORDS_API uses the static export, so the
-// public site needs no backend and never sends traffic to the county.
+//   1. VITE_RECORDS_API   a running worker, if one is configured
+//   2. static files       /records/<apn>.json, from worker/export-static.mjs
+//   3. /api/records       a serverless lookup against the county index
+//
+// Only a few hundred parcels are seeded as static files. Step 3 is what makes
+// the other ~206,600 clickable: the static file is tried first because it is
+// instant and costs the county nothing, and only a genuine miss escalates to a
+// live lookup. Set VITE_RECORDS_LIVE=0 to turn that off and go back to a purely
+// static site.
 const RECORDS_API =
   import.meta.env.VITE_RECORDS_API ?? (import.meta.env.DEV ? 'http://localhost:8788/records' : '');
 const RECORDS_STATIC = import.meta.env.VITE_RECORDS_STATIC ?? '/records';
+const RECORDS_LIVE = import.meta.env.VITE_RECORDS_LIVE === '0' ? '' : '/api/records';
 const RECORDS_DEMO = import.meta.env.VITE_RECORDS_DEMO === '1';
 
 type DeedRecord = {
@@ -92,8 +97,10 @@ type DeedRecord = {
 
 type RecordsState =
   | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'error'; message: string }
+  // `live` distinguishes reading a seeded file from querying the county, which
+  // is slow enough that the reader should be told which one is happening.
+  | { status: 'loading'; live?: boolean }
+  | { status: 'error'; message: string; busy?: boolean }
   | { status: 'done'; demo: boolean; records: DeedRecord[]; fetchedAt: string; miss?: boolean };
 
 // The recorder joins a document's filing codes with literal <br/>, and 401
@@ -577,19 +584,39 @@ export default function App() {
       const t = setTimeout(() => finish(demoRecords(sel)), 1100); // simulate the lookup
       return () => { cancelled = true; clearTimeout(t); };
     }
-    const url = RECORDS_API
-      ? `${RECORDS_API}?apn=${encodeURIComponent(sel.id)}`
-      : `${RECORDS_STATIC}/${encodeURIComponent(sel.id.toUpperCase())}.json`;
-    fetch(url)
-      .then((r) => {
-        // A 404 from the static export means this parcel was never seeded, which
-        // is a miss rather than an error: the UI invites a county lookup instead.
-        if (r.status === 404) return { records: [], miss: true };
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((d) => finish(d.records ?? [], !!d.miss))
-      .catch((e) => !cancelled && setRecords({ status: 'error', message: String(e.message || e) }));
+    const apn = encodeURIComponent(sel.id.toUpperCase());
+
+    // A seeded parcel answers from a static file. Anything else is looked up
+    // live, which takes a second or two, so say so rather than showing an
+    // empty record list while it runs.
+    const lookUpLive = () => {
+      if (!RECORDS_LIVE) return finish([], true);
+      if (!cancelled) setRecords({ status: 'loading', live: true });
+      return fetch(`${RECORDS_LIVE}?apn=${apn}`)
+        .then((r) => (r.ok ? r.json() : r.json().catch(() => ({})).then((b) => Promise.reject(
+          Object.assign(new Error(b.busy ? 'busy' : `HTTP ${r.status}`), { busy: !!b.busy }),
+        ))))
+        .then((d) => finish(d.records ?? [], false));
+    };
+
+    const primary = RECORDS_API
+      ? fetch(`${RECORDS_API}?apn=${apn}`).then((r) => {
+          if (r.status === 404) return null;
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
+      : fetch(`${RECORDS_STATIC}/${apn}.json`).then((r) => {
+          // The SPA catch-all can answer a missing file with index.html and a
+          // 200, so a non-JSON body counts as a miss too.
+          if (r.status === 404) return null;
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          if (!(r.headers.get('content-type') || '').includes('json')) return null;
+          return r.json();
+        });
+
+    primary
+      .then((d) => (d ? finish(d.records ?? [], !!d.miss) : lookUpLive()))
+      .catch((e) => !cancelled && setRecords({ status: 'error', message: String(e.message || e), busy: !!e.busy }));
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
@@ -889,8 +916,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, audioOn]);
 
-  // Fetch the manifest up front so the first beat does not wait on it.
-  useEffect(() => { primeNarration(); }, []);
+  // Fetch the manifest up front, both so the first beat does not wait on it
+  // and to decide whether to offer the guide at all.
+  const [hasVoice, setHasVoice] = useState(false);
+  useEffect(() => { primeNarration().then(setHasVoice); }, []);
 
   const replayStory = () => {
     setCompareMode(false);
@@ -1096,14 +1125,18 @@ export default function App() {
           <button className={showRankings ? 'on' : ''} onClick={() => setShowRankings((v) => !v)}>
             <Icon name="breakdown" size={15} /> Rankings
           </button>
-          <span className="dock-sep" />
-          <button
-            className={audioOn ? 'on audio' : 'audio'}
-            onClick={() => setAudioOn((v) => !v)}
-            title={audioOn ? 'Turn the audio guide off' : 'Read parcels aloud as you explore'}
-          >
-            <span className="audio-dot" /> Audio
-          </button>
+          {hasVoice && (
+            <>
+              <span className="dock-sep" />
+              <button
+                className={audioOn ? 'on audio' : 'audio'}
+                onClick={() => setAudioOn((v) => !v)}
+                title={audioOn ? 'Turn the audio guide off' : 'Read parcels aloud as you explore'}
+              >
+                <span className="audio-dot" /> Audio
+              </button>
+            </>
+          )}
           <span className="dock-sep" />
           <button onClick={() => setShowAbout(true)} title="About & FAQ" aria-label="About">
             <Icon name="info" size={15} />
@@ -1155,6 +1188,7 @@ export default function App() {
           onSetYear={setYear}
           onNarrate={speakBeat}
           audioOn={audioOn}
+          hasVoice={hasVoice}
           onToggleAudio={() => setAudioOn((v) => !v)}
           onExplore={() => {
             setYear(null);
@@ -1614,11 +1648,18 @@ export default function App() {
                 <h3>Recorded documents (public)</h3>
                 {records.status === 'loading' && (
                   <div className="rec-loading">
-                    <span className="rec-spinner" /> Checking SF recorded documents for parcel {sel.id}…
+                    <span className="rec-spinner" />{' '}
+                    {records.live
+                      ? `Pulling this parcel's deeds from the county index…`
+                      : `Checking SF recorded documents for parcel ${sel.id}…`}
                   </div>
                 )}
                 {records.status === 'error' && (
-                  <p className="est-source">Couldn't reach the records service ({records.message}).</p>
+                  <p className="est-source">
+                    {records.busy
+                      ? 'The county index is busy right now. Try again in a moment, or search it directly below.'
+                      : `Couldn't reach the county index (${records.message}). You can search it directly below.`}
+                  </p>
                 )}
                 {records.status === 'done' && (
                   <>
@@ -1633,7 +1674,7 @@ export default function App() {
                           ? `${records.records.length} document${records.records.length === 1 ? '' : 's'} from the SF Assessor-Recorder public index.`
                           : records.miss
                             ? 'This parcel has not been looked up yet. Search it directly in the county index below.'
-                            : 'No documents recorded for this parcel since 1990 in the public index.'}
+                            : 'Nothing recorded against this parcel since 1990 in the public index.'}
                       </p>
                     )}
                     <ul className="rec-list">
@@ -1953,6 +1994,7 @@ function StoryScroller({
   onExplore,
   onNarrate,
   audioOn,
+  hasVoice,
   onToggleAudio,
 }: {
   meta: Meta;
@@ -1963,6 +2005,7 @@ function StoryScroller({
   onExplore: () => void;
   onNarrate: (voiceId: string) => void;
   audioOn: boolean;
+  hasVoice: boolean;
   onToggleAudio: () => void;
 }) {
   const [active, setActive] = useState(0);
@@ -2076,15 +2119,16 @@ function StoryScroller({
                     Skip to the map <span className="arr">↓</span>
                   </button>
                   {/* The dock only exists in explore, so without this there is
-                      no way to start the narration while reading. */}
-                  <button
+                      no way to start the narration while reading. Hidden until
+                      recorded takes exist; see primeNarration. */}
+                  {hasVoice && <button
                     className={audioOn ? 'skiplink listen on' : 'skiplink listen'}
                     onClick={onToggleAudio}
                     aria-pressed={audioOn}
                   >
                     {audioOn ? 'Stop listening' : 'Listen as you read'}
                     <span className="arr">{audioOn ? '■' : '▶'}</span>
-                  </button>
+                  </button>}
                 </div>
               )}
               {i === STORY_STEPS.length - 1 && (

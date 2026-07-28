@@ -60,9 +60,17 @@ function loadManifest(): Promise<Manifest | null> {
   return manifestPromise;
 }
 
-/** Warm the manifest so the first beat does not wait on a round trip. */
-export function primeNarration(): void {
-  void loadManifest();
+/**
+ * Warm the manifest, and report whether recorded narration exists at all.
+ *
+ * The guide's controls are hidden until this resolves true. Speech synthesis
+ * is a reasonable fallback for a beat mid-story, but it is not something to
+ * offer up front as though it were the voice-over — so the buttons appear
+ * only once real takes have been generated, and appear on their own after
+ * worker/gen-voice.mjs has run.
+ */
+export function primeNarration(): Promise<boolean> {
+  return loadManifest().then((m) => Object.keys(m?.beats ?? {}).length > 0);
 }
 
 export function stopNarration(): void {

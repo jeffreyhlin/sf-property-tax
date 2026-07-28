@@ -109,5 +109,5 @@ public so visitor traffic is never proxied onto county servers.
 - Institutional owners (housing partnerships, LLCs, banks) appear alongside households. Their low
   assessments often reflect regulatory restrictions rather than Prop 13 carryover, so they should
   not be read as loophole beneficiaries.
-- Names shown come from public county records. There is currently no takedown path for
-  individuals; consider adding one before publishing widely.
+- Names shown come from public county records and are reproduced as recorded. Factual
+  corrections (misparsed names, wrong parcel match, mislabeled transfer) go through issues.

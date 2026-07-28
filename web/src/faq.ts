@@ -38,8 +38,8 @@ export const FAQ: FaqItem[] = [
     "a": "This site shows addresses, taxed values, estimates, and the grantor and grantee names on recorded deeds. All of it is public record. We publish it because who benefits from Prop 13, and by how much, is a public policy question, and because ownership recorded with the county has been public for as long as counties have kept deeds. We aim at the system and at the scale of the subsidy, not at any one household, and we do not add anything the county has not already published: no phone numbers, no emails, no mailing addresses, no linking of one owner across properties."
   },
   {
-    "q": "Can I get my property removed?",
-    "a": "Names on recorded deeds are public record and this site reproduces them as recorded, so it does not remove them. If something here is wrong, though, we do want to fix it: a misparsed name, a parcel matched to the wrong records, or a transfer we have mislabeled. Open an issue on the project's GitHub repository with the parcel and what looks wrong, and it will be corrected."
+    "q": "Something here looks wrong. Can you fix it?",
+    "a": "Yes, and please say so. The things that go wrong here are a misparsed name, a parcel matched to the wrong records, a transfer we have mislabeled, or a market estimate that is simply off for an unusual property. Open an issue on the project's GitHub repository with the parcel and what looks wrong, and it will be corrected."
   },
   {
     "q": "Where does the data come from, and how often does it update?",

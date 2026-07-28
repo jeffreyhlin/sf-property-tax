@@ -1,12 +1,23 @@
 # Deploying
 
-**The public site is fully static. There is no server to run.**
+**Static files plus one small function.** There is no server to keep running.
 
-Under `CACHE_ONLY` the worker only reads JSON off disk, so for a public deployment
-there is nothing for it to compute. `worker/export-static.mjs` copies the warmed
-cache into `web/public/records/`, and a production build fetches
-`/records/<apn>.json` straight from the same host. One static deploy, no backend,
-no CORS, and no traffic to the county from your visitors.
+Deeds come from two places. A few hundred parcels — the story, the leaderboards —
+are exported to `web/public/records/<apn>.json` and served as static files.
+Everything else is looked up when a reader clicks it, by
+`netlify/functions/records.mjs`, which queries the county index server-side and
+hands back the same shape.
+
+The function exists because the recorder sends no CORS headers and checks
+`Origin`, `Referer` and `User-Agent`, so the browser cannot call it directly.
+Three things keep it from becoming a load test on a county server: the static
+file is always tried first, so seeded parcels never reach the county at all; the
+CDN caches each answer for a day, so a parcel that goes viral is one upstream
+request; and the function allows only two lookups at a time, spaced, answering
+503 beyond that rather than queueing.
+
+Set `VITE_RECORDS_LIVE=0` at build time to drop the fallback and ship a purely
+static site, where unseeded parcels show a link to the county's own search.
 
 ```bash
 cd worker && node seed-cache.mjs --all     # warm the cache (about 400 parcels)
@@ -35,11 +46,9 @@ real deeds showed roughly 84% of those were ordinary market events. The UI now s
 each affected parcel carries a caveat. If you want the stronger claim back, it needs
 the bulk §408.1 feed, not the current inference.
 
-Also decide, deliberately, whether you are comfortable publishing residents' names.
-The recorder index is public and the app only shows what the county publishes, but a
-searchable map is more exposed than a county terminal. The SF Chronicle's comparable
-project removes individuals on request while keeping companies. There is currently no
-takedown path in this app.
+Names on recorded deeds are public record, and the app reproduces them as the county
+publishes them. What it does accept is factual corrections: a misparsed name, a parcel
+matched to the wrong records, a mislabeled transfer. Those come in as GitHub issues.
 
 ## 1. Static site
 
