@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "Narration script for the audio guide. This is the single source of truth:",
+    "the app reads it to know what to say, and worker/gen-voice.mjs reads it to",
+    "generate the recorded MP3s. Edit the text here, re-run the generator, and",
+    "both stay in step.",
+    "",
+    "Written to be heard, not read. It is deliberately not identical to the",
+    "on-screen copy: numerals are spelled the way a person says them ('two",
+    "percent', not '2%') because text-to-speech mangles symbols, and the",
+    "sentences are shorter than the prose.",
+    "",
+    "Ids are stable filenames. Renaming one orphans its MP3."
+  ],
+  "beats": [
+    {
+      "id": "opening",
+      "text": "One family bought decades ago. Their neighbor bought last year. For nearly identical houses, the newer owner can owe ten times more property tax. This is a map of that gap across every parcel in San Francisco."
+    },
+    {
+      "id": "how-prop-13-works",
+      "text": "Since 1978, California taxes a home on its purchase price, rising at most two percent a year, until it sells again. Prices have far outrun two percent, so the longer you hold, the wider the gap."
+    },
+    {
+      "id": "citywide",
+      "text": "Each block here is a neighborhood. Taller and darker means a bigger gap. The Sunset, the Richmond, and West of Twin Peaks tower over the rest."
+    },
+    {
+      "id": "compounding",
+      "text": "Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners stayed put, the yearly savings grew with them."
+    },
+    {
+      "id": "where-it-sits",
+      "text": "Three quarters of the gap belongs to owners who have simply held since before 2007. Long ownership is the subsidy. A smaller slice traces to transfers that avoided a reassessment."
+    },
+    {
+      "id": "one-house",
+      "text": "This house changed hands in 2011 without a reassessment. It is still taxed on 29 percent of what it is worth, about 65 thousand dollars a year less than a new buyer would owe."
+    },
+    {
+      "id": "your-turn",
+      "text": "The map is yours from here. Search an address, tap any parcel, or turn on Compare to line up your block against a neighbor's."
+    },
+    {
+      "id": "guide-on",
+      "text": "Audio guide on. I will read each parcel as you open it."
+    }
+  ]
+}

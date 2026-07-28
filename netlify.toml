@@ -18,6 +18,11 @@
   to   = "/data/:splat"
   status = 404
 
+[[redirects]]
+  from = "/audio/*"
+  to   = "/audio/:splat"
+  status = 404
+
 # Single-page app: every other route renders index.html. Deep links like
 # /#p=2992059 are hash-based so they never hit the server, but this keeps
 # any future path-based route working.
@@ -38,6 +43,18 @@
   for = "/records/*"
   [headers.values]
     Cache-Control = "public, max-age=86400, stale-while-revalidate=604800"
+
+# Narration is regenerated only when the script changes, and the manifest is
+# what tells the app a take exists, so keep the manifest fresher than the MP3s.
+[[headers]]
+  for = "/audio/*.mp3"
+  [headers.values]
+    Cache-Control = "public, max-age=604800, stale-while-revalidate=2592000"
+
+[[headers]]
+  for = "/audio/manifest.json"
+  [headers.values]
+    Cache-Control = "public, max-age=300, must-revalidate"
 
 [[headers]]
   for = "/assets/*"

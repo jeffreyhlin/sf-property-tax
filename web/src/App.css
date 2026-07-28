@@ -1619,7 +1619,7 @@ button.ghost:hover {
    to a title row plus a horizontally scrolling filter row.
    ===================================================================== */
 @media (max-width: 760px) {
-  :root { --rail-h: calc(58px + env(safe-area-inset-bottom)); }
+  :root { --dock-h: calc(58px + env(safe-area-inset-bottom)); }
 
   /* ---- top bar: compact, stacked, scrollable filters ---- */
   .topbar {
@@ -1652,27 +1652,12 @@ button.ghost:hover {
   .filter-label { display: none; }
   .chip { padding: 9px 13px; font-size: 13px; min-height: 40px; white-space: nowrap; }
 
-  /* ---- rail becomes a bottom tab bar ---- */
-  .railnav {
-    left: 0; right: 0; top: auto;
-    bottom: 0;
-    flex-direction: row;
-    justify-content: space-around;
-    gap: 2px;
-    padding: 5px 6px calc(5px + env(safe-area-inset-bottom));
-    border-radius: 16px 16px 0 0;
-    border-left: 0; border-right: 0; border-bottom: 0;
-    box-shadow: 0 -4px 20px rgba(80, 60, 20, 0.13);
-  }
-  .railnav button { width: 46px; height: 44px; }
-  .railnav .rail-tip { display: none; }   /* hover tooltips are useless on touch */
-
   /* ---- parcel panel + leaderboard become bottom sheets ---- */
   .panel,
   .board {
     left: 0; right: 0;
     top: auto;
-    bottom: var(--rail-h);
+    bottom: var(--dock-h);
     width: 100%;
     max-width: none;
     max-height: 76dvh;
@@ -1699,14 +1684,18 @@ button.ghost:hover {
      The ramp is explained in the story and in each parcel's readout. */
   .legend { display: none; }
 
-  /* ---- story: full width, map behind rather than beside ---- */
+  /* ---- story: full width, map behind rather than beside ----
+     No background here. The story reads as one surface with the map showing
+     through at the edges, same as desktop; .story2::before below is the only
+     thing keeping the text legible. An opaque sheet here (this used to be
+     #f7f3eaf2) hides the map completely and the story reads as a plain
+     text page. */
   .app.view-story .map-pane { left: 0; }
   .story2 {
     left: 0;
     width: 100%;
     border-right: 0;
-    background: #f7f3eaf2;
-    padding-bottom: var(--rail-h);
+    background: transparent;
   }
   .story2-scroll { padding: 0 20px; }
   .story2-intro h1 { font-size: clamp(26px, 7vw, 34px); }
@@ -1721,7 +1710,7 @@ button.ghost:hover {
 @media (max-width: 380px) {
   .title h1 { font-size: 14.5px; }
   .chip { padding: 8px 10px; font-size: 12.5px; }
-  .railnav button { width: 42px; }
+  .dock button { font-size: 10px; padding: 6px 5px; }
 }
 
 /* Inference caveat shown on parcels flagged "transferred without reassessment".
@@ -1799,6 +1788,21 @@ button.ghost:hover {
 .skiplink:hover { opacity: 1; gap: 11px; border-color: transparent; }
 .skiplink .arr { transition: transform 0.2s ease; }
 .skiplink:hover .arr { transform: translateY(2px); }
+
+/* "Skip to the map" and "Listen as you read" sit together: both are the
+   reader deciding how to take the story, so they belong on one line. */
+.story2-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 22px;
+}
+/* the listen toggle is the quieter of the two until it is on */
+.skiplink.listen { color: #6b6152; font-weight: 600; }
+.skiplink.listen .arr { font-size: 10px; }
+.skiplink.listen:hover { color: #b25007; gap: 7px; }
+.skiplink.listen:hover .arr { transform: none; }
+.skiplink.listen.on { color: #b25007; opacity: 1; }
 
 /* the breakdown, inline as a story chapter */
 .story-sankey {
@@ -2002,10 +2006,17 @@ button.ghost:hover {
 @media (max-width: 760px) {
   .story2-step { padding-left: 6vw; padding-right: 6vw; min-height: 108vh; }
   .story2-card { width: 100%; }
+  /* the base rule pins the Sankey chapter to 62vw, which on a phone is a
+     232px column. Same specificity here so full width wins. */
+  .story2-step:has(.story-sankey) .story2-card { width: 100%; }
+  /* Tighter than desktop's scrim so the map still reads at the top and bottom
+     of a phone screen. Solid through the text band, gone by the edges. */
   .story2::before {
-    background: radial-gradient(96vw 72vh at 50% 46%, #f7f3ea 32%, rgba(247,243,234,0.86) 62%, rgba(247,243,234,0) 84%);
+    background: radial-gradient(88vw 54vh at 50% 47%, #f7f3ea 34%, rgba(247,243,234,0.9) 64%, rgba(247,243,234,0) 92%);
   }
-  .sankey-view.compact .sankey-svg { min-width: 320px; }
+  /* just under the narrowest card width so the chart fits instead of
+     growing a scrollbar for the sake of 30px */
+  .sankey-view.compact .sankey-svg { min-width: 270px; }
 
   .dock {
     left: 0;

@@ -12,6 +12,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './App.css';
 import { FAQ } from './faq';
 import { SankeyView } from './SankeyView';
+import { narrate, narrateText, stopNarration, primeNarration } from './narrator';
 // PMTiles overview layer (pipeline/tiles.py builds data/parcels.pmtiles) is staged
 // but not wired: MVTLayer needs a data source to activate tiling; see docs/proposals.md.
 // import { PMTilesLayer } from './pmtilesLayer';
@@ -836,18 +837,18 @@ export default function App() {
   }, [compareOpen, comparePicks.join()]);
 
   // Audio guide. Museum-style narration that follows what you are looking at.
-  // Browser speech synthesis stands in for recorded voice.
-  const speak = useCallback((text: string) => {
-    if (!audioOn || typeof window === 'undefined' || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 0.97;
-    window.speechSynthesis.speak(u);
+  // Story beats play a recorded voice; parcel readouts are generated text and
+  // fall back to speech synthesis. See narrator.ts.
+  const speakBeat = useCallback((id: string) => {
+    if (!audioOn) return;
+    void narrate(id);
   }, [audioOn]);
 
   useEffect(() => {
-    if (!audioOn) window.speechSynthesis?.cancel();
-    else speak('Audio guide on. I will read each parcel as you open it.');
+    if (!audioOn) stopNarration();
+    // In the story, switching audio on should pick up the beat you are reading
+    // rather than announce itself; StoryScroller handles that.
+    else if (view !== 'story') void narrate('guide-on');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioOn]);
 
@@ -856,12 +857,15 @@ export default function App() {
     if (!audioOn || !selected) return;
     const p = selected;
     const pct = p.ratio != null ? `${Math.round(p.ratio * 100)} percent of its estimated value` : 'an unknown share of its value';
-    speak(
+    narrateText(
       `${p.addr}. Taxed at ${pct}. About ${fmt$(p.savings ?? 0)} a year less than a new buyer would owe.` +
         (p.transferYear ? ` Its tax basis was set in ${p.transferYear}.` : ''),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, audioOn]);
+
+  // Fetch the manifest up front so the first beat does not wait on it.
+  useEffect(() => { primeNarration(); }, []);
 
   const replayStory = () => {
     setCompareMode(false);
@@ -1124,6 +1128,9 @@ export default function App() {
           }}
           onSetTransfersOnly={setTransfersOnly}
           onSetYear={setYear}
+          onNarrate={speakBeat}
+          audioOn={audioOn}
+          onToggleAudio={() => setAudioOn((v) => !v)}
           onExplore={() => {
             setYear(null);
             setView('explore');
@@ -1847,72 +1854,65 @@ type StoryStep = {
   play?: boolean;   // auto-animate 2007 -> latest with a live metric
   sankey?: boolean; // render the breakdown inline, as a chapter
   skip?: boolean;   // offer the escape hatch under this step's copy
-  narration?: string; // what the audio guide reads for this beat
+  voice?: string;   // id in narration.json; what the audio guide reads here
 };
 
 const STORY_STEPS: StoryStep[] = [
   {
     kicker: 'SF Property Tax Gap',
     title: 'Two homes on one block, ten times the tax',
+    voice: 'opening',
     body: 'One family bought decades ago. Their neighbor bought last year. For nearly identical houses, the newer owner can owe ten times more property tax. This is a map of that gap across all 207,000 parcels in San Francisco.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 11.4, pitch: 42, bearing: 0 },
     skip: true,
-    narration:
-      'One family bought decades ago. Their neighbor bought last year. For nearly identical houses, the newer owner can owe ten times more property tax. This is a map of that gap across every parcel in San Francisco.',
   },
   {
     kicker: 'How Prop 13 works',
     title: 'Taxed on what you paid, not what it is worth',
+    voice: 'how-prop-13-works',
     body: 'Since 1978, California taxes a home on its purchase price, rising at most 2% a year, until it sells again. Prices have far outrun 2%. Hold a home for thirty years and the difference between your bill and a new buyer’s bill grows very large.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 11.6, pitch: 45, bearing: 15 },
     skip: true,
-    narration:
-      'Since 1978, California taxes a home on its purchase price, rising at most two percent a year, until it sells again. Prices have far outrun two percent, so the longer you hold, the wider the gap.',
   },
   {
     kicker: 'The citywide picture',
     title: 'About $2 billion a year',
+    voice: 'citywide',
     body: 'Each block is a neighborhood, and taller and darker means a bigger gap. The Sunset, the Richmond, and West of Twin Peaks tower over the rest: older, long-held, single-family areas where the gap has compounded for decades.',
     view: { longitude: -122.4525, latitude: 37.752, zoom: 11.7, pitch: 50, bearing: -10 },
-    narration:
-      'Each block here is a neighborhood. Taller and darker means a bigger gap. The Sunset, the Richmond, and West of Twin Peaks tower over the rest.',
   },
   {
     kicker: 'It compounds',
     title: 'The gap since 2007',
+    voice: 'compounding',
     body: 'Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners stayed put, the yearly savings grew with them. The blocks rise in real time.',
     view: { longitude: -122.4525, latitude: 37.752, zoom: 11.7, pitch: 50, bearing: -10 },
     play: true,
-    narration:
-      'Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners stayed put, the yearly savings grew with them.',
   },
   {
     kicker: 'Where the $2B sits',
     title: 'Mostly people who never left',
+    voice: 'where-it-sits',
     body: 'Three quarters of the gap belongs to owners who have simply held since before 2007. Long ownership is the subsidy. A much smaller slice traces to transfers that changed hands without triggering a reassessment.',
     view: { longitude: -122.4525, latitude: 37.752, zoom: 11.5, pitch: 35, bearing: 0 },
     sankey: true,
-    narration:
-      'Three quarters of the gap belongs to owners who have simply held since before 2007. Long ownership is the subsidy. A smaller slice traces to transfers that avoided a reassessment.',
   },
   {
     kicker: 'One house',
     title: '247 Lansdale Ave',
+    voice: 'one-house',
     body: 'This West of Twin Peaks house changed hands in 2011 without a reassessment, and is still taxed on 29% of what it is worth. That is about $65,000 a year less than a new buyer would owe, and roughly $690,000 kept since. The county recorder lists every deed on it, names included.',
     view: { longitude: -122.4594, latitude: 37.7366, zoom: 16.5, pitch: 30, bearing: 0 },
     parcel: { id: '2992059', nbhd: 'West of Twin Peaks' },
     year: null,
-    narration:
-      'This house changed hands in 2011 without a reassessment. It is still taxed on 29 percent of what it is worth, about 65 thousand dollars a year less than a new buyer would owe.',
   },
   {
     kicker: 'Your turn',
     title: 'Now look up your street',
+    voice: 'your-turn',
     body: 'The map is yours from here. Search an address, tap any parcel to see two decades of its taxes and every recorded deed, or turn on Compare to line up your block against a neighbor’s.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 12, pitch: 40, bearing: 0 },
     transfersOnly: true,
-    narration:
-      'The map is yours from here. Search an address, tap any parcel, or turn on Compare to line up your block against a neighbor’s.',
   },
 ];
 
@@ -1926,6 +1926,9 @@ function StoryScroller({
   onSetTransfersOnly,
   onSetYear,
   onExplore,
+  onNarrate,
+  audioOn,
+  onToggleAudio,
 }: {
   meta: Meta;
   onFly: (v: Partial<MapViewState>) => void;
@@ -1933,6 +1936,9 @@ function StoryScroller({
   onSetTransfersOnly: (v: boolean) => void;
   onSetYear: (y: number | null) => void;
   onExplore: () => void;
+  onNarrate: (voiceId: string) => void;
+  audioOn: boolean;
+  onToggleAudio: () => void;
 }) {
   const [active, setActive] = useState(0);
   const [playYear, setPlayYear] = useState<number | null>(null);
@@ -1947,12 +1953,13 @@ function StoryScroller({
       onFly(s.view);
       onSetTransfersOnly(s.transfersOnly ?? false);
       if (!s.play && 'year' in s) onSetYear(s.year ?? null);
+      if (s.voice) onNarrate(s.voice);
       if (s.parcel) {
         const p = s.parcel;
         setTimeout(() => onSelectParcel(p.id, p.nbhd), 900);
       }
     },
-    [onFly, onSelectParcel, onSetTransfersOnly, onSetYear],
+    [onFly, onSelectParcel, onSetTransfersOnly, onSetYear, onNarrate],
   );
 
   // deterministic active-step detection: whichever step's center is nearest the
@@ -1979,6 +1986,14 @@ function StoryScroller({
     applyStep(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Turning the guide on mid-story starts from whatever beat is on screen.
+  useEffect(() => {
+    if (!audioOn) return;
+    const v = STORY_STEPS[activeRef.current]?.voice;
+    if (v) onNarrate(v);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioOn]);
 
   // when the play step is active, sweep 2007 -> latest and loop; the layer's own
   // 750ms transition tweens the heights/colors so the sweep looks continuous
@@ -2031,9 +2046,21 @@ function StoryScroller({
                 </div>
               )}
               {s.skip && (
-                <button className="skiplink" onClick={onExplore}>
-                  Skip to the map <span className="arr">↓</span>
-                </button>
+                <div className="story2-choices">
+                  <button className="skiplink" onClick={onExplore}>
+                    Skip to the map <span className="arr">↓</span>
+                  </button>
+                  {/* The dock only exists in explore, so without this there is
+                      no way to start the narration while reading. */}
+                  <button
+                    className={audioOn ? 'skiplink listen on' : 'skiplink listen'}
+                    onClick={onToggleAudio}
+                    aria-pressed={audioOn}
+                  >
+                    {audioOn ? 'Stop listening' : 'Listen as you read'}
+                    <span className="arr">{audioOn ? '■' : '▶'}</span>
+                  </button>
+                </div>
               )}
               {i === STORY_STEPS.length - 1 && (
                 <button className="story-next" onClick={onExplore}>Open the map →</button>
