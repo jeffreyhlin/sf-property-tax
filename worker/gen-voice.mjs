@@ -17,7 +17,7 @@
  * Node 18+. No dependencies.
  */
 
-import { readFile, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -151,16 +151,31 @@ async function main() {
   await mkdir(OUT_DIR, { recursive: true });
   const prev = await readManifest();
   const force = has('--force');
-  // Changing the voice or the model invalidates everything, not just the text.
-  const settingsChanged = prev.voiceId !== voiceId || prev.modelId !== MODEL_ID;
+  // Anything that changes how a take sounds invalidates every take, not just
+  // the ones whose text changed. Voice settings get hashed because they are a
+  // whole object and any field in it (speed, stability) changes the output.
+  const settingsHash = hashOf(JSON.stringify(VOICE_SETTINGS));
+  const settingsChanged =
+    prev.voiceId !== voiceId ||
+    prev.modelId !== MODEL_ID ||
+    prev.format !== OUTPUT_FORMAT ||
+    prev.settingsHash !== settingsHash;
 
   const next = {
     voiceId,
     modelId: MODEL_ID,
     format: OUTPUT_FORMAT,
+    settingsHash,
     generatedAt: new Date().toISOString(),
     beats: {},
   };
+
+  // Written after every beat rather than once at the end. A 429 or a dropped
+  // connection halfway through used to leave the manifest untouched, so the
+  // beats already paid for looked unrecorded and the next run bought them
+  // again — and on a first run the app could not see them at all, since it
+  // gates on the manifest rather than on the files.
+  const saveManifest = () => writeFile(MANIFEST, JSON.stringify(next, null, 2) + '\n');
 
   let made = 0, kept = 0, billed = 0;
   for (const beat of beats) {
@@ -182,22 +197,36 @@ async function main() {
     }
 
     process.stdout.write(`  → ${beat.id} … `);
-    const mp3 = await synthesize(key, voiceId, beat.text);
+    let mp3;
+    try {
+      mp3 = await synthesize(key, voiceId, beat.text);
+    } catch (e) {
+      // Bank what has already been paid for before giving up.
+      console.log('failed');
+      await saveManifest();
+      throw new Error(`${e.message}\n\n${made} beat(s) were generated and recorded in the manifest. Re-run to pick up where this stopped.`);
+    }
     await writeFile(file, mp3);
     next.beats[beat.id] = { hash, bytes: mp3.length, chars: beat.text.length };
     made++;
     billed += beat.text.length;
+    await saveManifest();
     console.log(`${(mp3.length / 1024).toFixed(0)} KB`);
     if (made < beats.length) await sleep(DELAY_MS);
   }
 
   // Drop MP3s whose beat was renamed or deleted, so the folder stays truthful.
+  // This directory is generated output and the manifest is authoritative, so a
+  // leftover take is only ever confusing.
   const known = new Set(beats.map((b) => `${b.id}.mp3`));
   for (const f of await readdir(OUT_DIR)) {
-    if (f.endsWith('.mp3') && !known.has(f)) console.log(`  ! ${f} is orphaned (no such beat)`);
+    if (f.endsWith('.mp3') && !known.has(f)) {
+      await rm(join(OUT_DIR, f));
+      console.log(`  ✕ ${f} removed (no such beat any more)`);
+    }
   }
 
-  await writeFile(MANIFEST, JSON.stringify(next, null, 2) + '\n');
+  await saveManifest();
   console.log(`\n${made} generated, ${kept} reused, ${billed} characters billed.`);
   console.log(`Manifest: ${MANIFEST}`);
 }

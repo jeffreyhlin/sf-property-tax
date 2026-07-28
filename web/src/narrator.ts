@@ -40,16 +40,22 @@ function loadManifest(): Promise<Manifest | null> {
   manifestPromise = fetch(`${AUDIO_BASE}/manifest.json`)
     .then((r) => {
       // A missing file can come back as the SPA shell with a 200, so trust the
-      // content type rather than the status. Parsing index.html would throw and
-      // land in the catch anyway; this just makes the miss deliberate.
+      // content type rather than the status.
       if (!r.ok) return null;
       if (!(r.headers.get('content-type') || '').includes('json')) return null;
-      return r.json();
+      return r.json() as Promise<Manifest>;
     })
-    .catch(() => null)
-    .then((m: Manifest | null) => {
-      manifest = m;
+    .then((m) => {
+      manifest = m; // a real answer, including a real "there is none"
       return m;
+    })
+    .catch(() => {
+      // A network failure is not evidence that narration is absent, and this
+      // fires during initial mount alongside the map data. Caching null here
+      // would silently downgrade the whole session to speech synthesis with
+      // no retry, so leave it unresolved and let the next beat try again.
+      manifestPromise = null;
+      return null;
     });
   return manifestPromise;
 }
