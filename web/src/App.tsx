@@ -96,6 +96,19 @@ type RecordsState =
   | { status: 'error'; message: string }
   | { status: 'done'; demo: boolean; records: DeedRecord[]; fetchedAt: string; miss?: boolean };
 
+// The recorder joins a document's filing codes with literal <br/>, and 401
+// parcels were exported before the worker started splitting them. Normalizing
+// at display time fixes the already-published files without re-querying the
+// county for every one of them.
+function docLabel(docType: string | null | undefined): string {
+  if (!docType) return 'Deed';
+  return docType
+    .split(/<br\s*\/?>/i)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(' \u00b7 ') || 'Deed';
+}
+
 // Demo fallback: turn our inferred transfer events into plausible deed rows so the
 // on-demand UX is demonstrable. Labeled as sample data, NOT real recorder output.
 function demoRecords(sel: ParcelProps): DeedRecord[] {
@@ -1572,7 +1585,7 @@ export default function App() {
                       <li key={i}>
                         <span className="rec-date">{r.date.slice(0, 4)}</span>
                         <span className="rec-doc">
-                          {r.docType ?? 'Deed'}
+                          {docLabel(r.docType)}
                           {r.kind === 'relational' && <em className="rec-exempt"> · family/trust</em>}
                           {r.consideration === 0 && <em className="rec-exempt"> · $0 tax</em>}
                           {r.grantee && <em> · to {r.grantee}</em>}
@@ -1620,7 +1633,7 @@ export default function App() {
                             <span className="rec-date">{r.date.slice(0, 4)}</span>
                             <span className="rec-doc">
                               <span className="rec-doctype">
-                                {r.docType}
+                                {docLabel(r.docType)}
                                 {r.kind === 'market' && <em className="rec-tag rec-market"> transfer</em>}
                                 {r.kind === 'relational' && (
                                   <em className="rec-tag rec-exempt"> family/trust</em>
@@ -2133,7 +2146,11 @@ function CompareReport({
       return `Basis set in ${y} by a transfer that did not trigger a reassessment.`;
     if (p.transferType === 'market') return `Basis reset in ${y} by a market sale.`;
     if (p.transferType === 'partial') return `Partly reassessed in ${y}.`;
-    return 'Held with no reset on record since 2007.';
+    // Careful here: this is a statement about the assessment roll, not the deed
+    // index. A parcel can sit on a pre-2007 basis and still have recorded deeds
+    // since, which is exactly what "From the records" below may go on to cite.
+    // "No reset on record" read as though the recorder showed nothing.
+    return 'Taxed on a basis set before 2007, with no reassessment since.';
   };
 
   // Only claim what the recorded documents actually support.
@@ -2163,7 +2180,7 @@ function CompareReport({
             <span className="rec-date">{String(r.date).slice(0, 4)}</span>
             <span className="rec-doc">
               <span className="rec-doctype">
-                {r.docType}
+                {docLabel(r.docType)}
                 {r.kind === 'market' && <em className="rec-tag rec-market"> transfer</em>}
                 {r.kind === 'relational' && <em className="rec-tag rec-exempt"> related parties</em>}
               </span>

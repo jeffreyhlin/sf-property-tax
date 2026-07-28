@@ -37,7 +37,15 @@ for (const f of fs.readdirSync(CACHE)) {
     console.warn(`skipping unreadable ${f}`);
     continue;
   }
-  const recs = Array.isArray(doc) ? doc : doc.records || [];
+  const raw = Array.isArray(doc) ? doc : doc.records || [];
+  // Filing codes arrive joined with literal <br/>. The worker strips that now,
+  // but the cache still holds pre-fix entries, and these files are a published
+  // data product, so clean them on the way out rather than shipping markup.
+  const recs = raw.map((r) =>
+    typeof r?.docType === 'string' && /<br/i.test(r.docType)
+      ? { ...r, docType: r.docType.split(/<br\s*\/?>/i).map((s) => s.trim()).filter(Boolean).join(' · ') }
+      : r,
+  );
   const apn = (doc.apn || path.basename(f, '.json')).toUpperCase();
   // Same shape the app already handles from the worker, minus server-only fields.
   const payload = {

@@ -178,7 +178,14 @@ async function fetchRecords(apn) {
     if (!docNumber || seen.has(docNumber)) continue;
     seen.add(docNumber);
     const { grantors, grantees } = parseNames(d.Names);
-    const docType = String(d.FilingCode || '').trim();
+    // One document can carry several filing codes, and the index joins them
+    // with literal <br/> the way its own web UI wants them. Left raw, that
+    // markup shows up verbatim as "SUBSTITUTION TRUSTEE<br/>RECONVEYANCE".
+    const docType = String(d.FilingCode || '')
+      .split(/<br\s*\/?>/i)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join(' · ');
     records.push({
       docNumber,
       date: normDate(d.DocumentDate),

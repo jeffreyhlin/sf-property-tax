@@ -2037,7 +2037,9 @@ button.ghost:hover {
   .cmp-tray {
     left: 0;
     right: 0;
-    bottom: 62px;
+    /* has to track the dock, which grows by the home-indicator inset. A fixed
+       62px sits on top of the dock on any phone with a safe area. */
+    bottom: var(--dock-h);
     transform: none;
     width: 100%;
     border-radius: 14px 14px 0 0;
@@ -2061,7 +2063,13 @@ button.ghost:hover {
   .cmp-result.cmp-fullscreen .cmp-cols { flex-direction: row; }
   .cmp-result.cmp-fullscreen .cmp-col { flex: 0 0 86vw; }
 
-  .rankings { width: 100%; }
+  /* both of these cover the whole screen, so their headers land under the
+     notch unless they clear the status bar themselves */
+  .cmp-result.cmp-fullscreen .cmp-head { padding-top: calc(14px + env(safe-area-inset-top)); }
+  .rankings {
+    width: 100%;
+    padding-top: calc(14px + env(safe-area-inset-top));
+  }
 }
 
 .results li .res-add {
