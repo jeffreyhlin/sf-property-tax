@@ -954,7 +954,10 @@ button.ghost:hover {
 .about-overlay {
   position: absolute;
   inset: 0;
-  z-index: 40;
+  /* Above every panel and the compare tray (42) and rankings (44). It has its
+     own scrim, so anything punching through it reads as a rendering fault —
+     the tray used to sit on top and clip the FAQ mid-list on mobile. */
+  z-index: 60;
   background: rgba(44, 36, 24, 0.35);
   display: flex;
   align-items: flex-start;

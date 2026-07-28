@@ -104,9 +104,21 @@ function docLabel(docType: string | null | undefined): string {
   if (!docType) return 'Deed';
   return docType
     .split(/<br\s*\/?>/i)
-    .map((s) => s.trim())
+    .map((s) => tidy(s))
     .filter(Boolean)
     .join(' \u00b7 ') || 'Deed';
+}
+
+// The county's own records carry stray runs of whitespace ("ORIDE TAD S &
+// MASUMI"). Collapse them for reading only: the published JSON stays a
+// faithful copy of what the recorder holds.
+function tidy(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function partyName(name: string | null | undefined): string {
+  const t = name ? tidy(name) : '';
+  return t || '\u2014';
 }
 
 // Demo fallback: turn our inferred transfer events into plausible deed rows so the
@@ -1588,7 +1600,7 @@ export default function App() {
                           {docLabel(r.docType)}
                           {r.kind === 'relational' && <em className="rec-exempt"> · family/trust</em>}
                           {r.consideration === 0 && <em className="rec-exempt"> · $0 tax</em>}
-                          {r.grantee && <em> · to {r.grantee}</em>}
+                          {r.grantee && <em> · to {partyName(r.grantee)}</em>}
                         </span>
                       </li>
                     ))}
@@ -1642,9 +1654,9 @@ export default function App() {
                               </span>
                               {hasNames && (
                                 <span className="rec-names">
-                                  <span className="rec-party">{r.grantor || '—'}</span>
+                                  <span className="rec-party">{partyName(r.grantor)}</span>
                                   <span className="rec-arrow"> → </span>
-                                  <span className="rec-party">{r.grantee || '—'}</span>
+                                  <span className="rec-party">{partyName(r.grantee)}</span>
                                 </span>
                               )}
                             </span>
@@ -2186,9 +2198,9 @@ function CompareReport({
               </span>
               {(r.grantor || r.grantee) && (
                 <span className="rec-names">
-                  <span className="rec-party">{r.grantor || '—'}</span>
+                  <span className="rec-party">{partyName(r.grantor)}</span>
                   <span className="rec-arrow"> → </span>
-                  <span className="rec-party">{r.grantee || '—'}</span>
+                  <span className="rec-party">{partyName(r.grantee)}</span>
                 </span>
               )}
             </span>
