@@ -46,15 +46,58 @@ function deedKind(docType) {
 // parent/child, or spousal transfer, not a market sale. This is a far stronger signal
 // than assessment behavior alone (see docs/recorder-validation-findings.md).
 const COMPANY_RE = /\b(INC|LLC|CORP|CO|LP|LLP|ENTERPRISE|BANK|ASSN|ASSOC|PARTNERS?|PROPERTIES|HOLDINGS|FUND|GROUP|COMPANY|LTD|FOUNDATION|CHURCH|CITY|COUNTY|USA|NA|SVCS|SERVICES|NOMINEE|MGMNT|MANAGEMENT|REALTY|CAPITAL|VENTURES?|INVESTMENTS?)\b/i;
+
+// Words that describe the vehicle rather than the person. A trust carries its
+// settlor's name, which is the whole point of matching on it, so these have to
+// come out before comparing: "PR TAPADIA LIVING TRUST" is Tapadia's trust.
+const ENTITY_WORDS = new Set([
+  'TRUST', 'TRUSTEE', 'TRUSTEES', 'TR', 'TRS', 'TRSTEE', 'LIVING', 'REVOCABLE', 'REVOC', 'REV',
+  'IRREVOCABLE', 'IRREV', 'FAMILY', 'FAM', 'DECLARATION', 'DECL', 'DCLRTN', 'DECLR', 'ESTATE',
+  'SURVIVORS', 'SURVIVOR', 'SUCCESSOR', 'SUCC', 'THE', 'OF', 'AND', 'ET', 'AL', 'UX', 'VIR',
+  'JR', 'SR', 'II', 'III', 'IV', 'MR', 'MRS', 'MS', 'DR', 'AKA', 'FKA', 'NKA', 'PR', 'CO',
+  'JOINT', 'TENANTS', 'TENANCY', 'COMMUNITY', 'PROPERTY', 'SEPARATE', 'MARITAL', 'BYPASS', 'EXEMPT',
+]);
+
+/**
+ * Significant name tokens: surnames and given names, with the entity scaffolding
+ * and bare initials stripped. Hyphens split, because a married couple's trust is
+ * routinely "SMITH-JONES FAMILY TRUST" while the deed names just "SMITH".
+ */
+function nameTokens(raw) {
+  return new Set(
+    String(raw || '')
+      .toUpperCase()
+      .split(/[^A-Z]+/)
+      .filter((t) => t.length >= 3 && !ENTITY_WORDS.has(t)),
+  );
+}
+
+/**
+ * Do these two parties share a personal name?
+ *
+ * The recorder uses a bare "DEED" filing code for both arm's-length sales and
+ * transfers a person makes to their own trust, so the doc type cannot tell them
+ * apart and the parties have to. Comparing only each name's first token missed
+ * every case where the trust is not written surname-first — and that is most of
+ * them: "DOMINGO BARBARA J L" to "BARBARA J L DOMINGO DCLRTN OF TR" is one
+ * person, but their first tokens are DOMINGO and BARBARA.
+ */
 function sharedSurname(grantors, grantees) {
   const g = (grantors[0] || '').trim().toUpperCase();
   const e = (grantees[0] || '').trim().toUpperCase();
   if (!g || !e) return false;
+  // Identical parties are a transfer to oneself however the name is written.
+  // Worth checking before tokenizing, because some are recorded with no
+  // personal name at all ("DECLARATION OF TRUST 1998" on both sides), which
+  // leaves nothing to compare once the entity words come out.
+  const squash = (s) => s.replace(/[^A-Z0-9]+/g, ' ').trim();
+  if (squash(g) === squash(e)) return true;
+
   if (COMPANY_RE.test(g) && COMPANY_RE.test(e)) return false; // company↔company = arm's-length
-  const sg = g.split(/\s+/)[0];
-  const se = e.split(/\s+/)[0];
-  // require a real surname token; a shared first token means same family/self
-  return !!sg && sg.length >= 3 && sg === se;
+  const a = nameTokens(g);
+  const b = nameTokens(e);
+  for (const t of a) if (b.has(t)) return true;
+  return false;
 }
 // Refine a doc-type kind using the parties: promote a "market" DEED to relational
 // when the parties share a surname (into-trust / parent-child / spousal).

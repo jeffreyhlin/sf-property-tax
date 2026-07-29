@@ -114,3 +114,41 @@ panel — it does not touch the parcel-level classifier, the leaderboards, or an
 My recommendation: **1 + 3 now** (cheap, makes the current claims defensible), and **2
 via the §408.1 feed** as the real fix. I did not act on any of these — they change the
 app's central narrative and are yours to decide.
+
+---
+
+## Follow-up: the surname match was matching almost nothing (2026-07-29)
+
+The party-based check above only compared the **first token** of each name. That
+works when the recorder writes both sides surname-first, and fails otherwise —
+which turns out to be most into-trust transfers, because a trust's name rarely
+leads with the settlor's surname.
+
+Three shapes it missed, all from one parcel (4367 21ST ST, APN 2765001):
+
+| grantor | grantee | first tokens compared | actually |
+|---|---|---|---|
+| `ABRECHT CHRISTOPHER RUSSELL` | `ABRECHT-VALDEZ FAMILY REVOC TRUST` | `ABRECHT` vs `ABRECHT-VALDEZ` | same person, hyphenated |
+| `TAPADIA PAVAN` | `PR TAPADIA LIVING TRUST` | `TAPADIA` vs `PR` | same person, prefixed |
+| `DOMINGO BARBARA J L` | `BARBARA J L DOMINGO DCLRTN OF TR` | `DOMINGO` vs `BARBARA` | same person, natural order |
+
+All three read as arm's-length sales. Every ownership event on that parcel did.
+
+`sharedSurname` now tokenizes both names, drops entity scaffolding (`TRUST`,
+`LIVING`, `REVOC`, `DECL`, `FAMILY`, `SURVIVORS`, honorifics, bare initials) and
+splits hyphens, then looks for any shared token of three characters or more.
+Identical parties short-circuit to relational, since some deeds carry no personal
+name at all (`DECLARATION OF TRUST 1998` on both sides).
+
+**Effect on the published set:** 315 of 12,931 records reclassified, every one
+`market -> relational`, no movement the other way. That is **23% of everything
+previously labeled a sale** (315 of 1,356). The `other` bucket — liens, loans,
+reconveyances — is untouched at 10,740.
+
+Verified against a 14-case suite covering all three shapes plus genuine sales,
+sales *out* of a trust (which must stay `market`), company-to-company, and names
+that are entity words only.
+
+This does not change any savings figure. It changes which recorded documents are
+described as sales, which matters because the site's whole claim is about how
+property changes hands without being reassessed.
