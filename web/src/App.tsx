@@ -63,6 +63,8 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 }
 
 const BASEMAP = 'https://basemaps.cartocdn.com/gl/positron-nolabels-gl-style/style.json';
+// Shared by the picker and the comparison table, so hoisted out of App.
+const MAX_COMPARE = 6;
 const PARCEL_ZOOM = 13; // below this, show neighborhood bubbles instead of parcels
 
 // Set to your Ko-fi / GitHub Sponsors / Stripe payment link to show a Donate button.
@@ -561,7 +563,6 @@ export default function App() {
   const [compareFull, setCompareFull] = useState(false);
   const [compareData, setCompareData] = useState<Record<string, DeedRecord[]>>({});
   const [audioOn, setAudioOn] = useState(false);
-  const MAX_COMPARE = 6;
   const searchRef = useRef<HTMLInputElement | null>(null);
   const [typeFilter, setTypeFilter] = useState<PropType>('all');
   const [nbhdRank, setNbhdRank] = useState<'total' | 'perParcel' | 'relational'>('total');
@@ -2613,6 +2614,44 @@ function CompareReport({
           )}
         </div>
 
+        {/* One row per attribute with the labels in a left gutter, so the eye
+            travels sideways across comparable numbers. Stacking each property
+            in its own column repeated every label and left the reader to do
+            the matching. */}
+        <div className="cmp-matrix-wrap">
+          <table className="cmp-matrix">
+            <thead>
+              <tr>
+                <th scope="col"><span className="vh">Attribute</span></th>
+                {bySav.map((p) => (
+                  <th scope="col" key={p.id}>
+                    {p.addr}
+                    <button onClick={() => onRemove(p.id)} aria-label={`Remove ${p.addr}`}>&times;</button>
+                  </th>
+                ))}
+                {items.length < MAX_COMPARE && <th scope="col" className="cmp-slot">+ add a property</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {([
+                ['Kept per year', (p: ParcelProps) => fmt$(p.savings ?? 0), true],
+                ['Share taxed', (p: ParcelProps) => (p.ratio != null ? `${Math.round(p.ratio * 100)}%` : '—'), false],
+                ['Tax today', (p: ParcelProps) => fmt$(p.taxEst ?? 0), false],
+                ['A new buyer pays', (p: ParcelProps) => fmt$((p.taxEst ?? 0) + (p.savings ?? 0)), false],
+                ['Assessed', (p: ParcelProps) => fmt$k(p.assessed), false],
+                ['Est. market', (p: ParcelProps) => (p.estMarket ? fmt$k(p.estMarket) : '—'), false],
+                ['Basis set', (p: ParcelProps) => String(basisOf(p) ?? 'before 2007'), false],
+              ] as Array<[string, (p: ParcelProps) => string, boolean]>).map(([label, get, lead]) => (
+                <tr key={label} className={lead ? 'cmp-lead' : undefined}>
+                  <th scope="row">{label}</th>
+                  {bySav.map((p) => <td key={p.id}>{get(p)}</td>)}
+                  {items.length < MAX_COMPARE && <td className="cmp-slot" />}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
         <div className="cmp-cols">
           {bySav.map((p) => (
             <div className="cmp-col" key={p.id}>
@@ -2623,12 +2662,6 @@ function CompareReport({
                 </div>
                 <button onClick={() => onRemove(p.id)} aria-label={`Remove ${p.addr}`}>&times;</button>
               </div>
-              <div className="cmp-big">{fmt$(p.savings ?? 0)}<small>saved per year</small></div>
-              <div className="cmp-spec"><span>Assessed</span><span>{fmt$k(p.assessed)}</span></div>
-              <div className="cmp-spec"><span>Est. market</span><span>{p.estMarket ? fmt$k(p.estMarket) : '—'}</span></div>
-              <div className="cmp-spec"><span>Tax today</span><span>{fmt$(p.taxEst ?? 0)}</span></div>
-              <div className="cmp-spec"><span>Share of value</span><span>{p.ratio != null ? `${Math.round(p.ratio * 100)}%` : '—'}</span></div>
-              <div className="cmp-spec"><span>Basis set</span><span>{basisOf(p) ?? 'before 2007'}</span></div>
               <h4 className="cmp-deedhead">Recorded documents</h4>
               {deeds(p)}
             </div>

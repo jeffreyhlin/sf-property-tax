@@ -2230,3 +2230,58 @@ body:has(.brand-v3) { font-family: var(--font-ui); }
 .brand-v3 .legend-title,
 .brand-v3 .cmp-meta,
 .brand-v3 .stats3 .lbl { color: var(--muted); }
+
+/* ---- comparison as an attribute matrix ---- */
+.cmp-matrix-wrap { overflow-x: auto; margin: 4px 0 18px; }
+.cmp-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.cmp-matrix th,
+.cmp-matrix td {
+  text-align: left;
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--rule-pale);
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+/* the row-label gutter: this is what lets the eye travel sideways */
+.cmp-matrix tbody th {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-right: 18px;
+  white-space: nowrap;
+}
+.cmp-matrix thead th {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-strong);
+  border-bottom: 1px solid var(--rule-firm);
+  padding-right: 18px;
+}
+.cmp-matrix thead th button {
+  border: 0;
+  background: none;
+  padding: 0 0 0 6px;
+  min-height: 0;
+  font-size: 14px;
+  color: var(--muted-soft);
+  cursor: pointer;
+}
+.cmp-matrix thead th button:hover { color: var(--accent); }
+/* the number the comparison is actually about */
+.cmp-matrix tr.cmp-lead td { font-size: 16px; font-weight: 700; color: var(--accent); }
+.cmp-matrix .cmp-slot { color: var(--muted-soft); font-style: italic; font-weight: 400; }
+.vh {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.brand-v3 .cmp-matrix tr.cmp-lead td { font-family: var(--font-display); font-size: 18px; }
