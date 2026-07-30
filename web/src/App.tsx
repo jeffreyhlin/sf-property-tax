@@ -1610,6 +1610,7 @@ export default function App() {
           }}
           onSetTransfersOnly={setTransfersOnly}
           onSetYear={setYear}
+          onSetExtrude={setExtrude}
           onNarrate={speakBeat}
           audioOn={audioOn}
           hasVoice={hasVoice}
@@ -2452,6 +2453,7 @@ type StoryStep = {
   play?: boolean;   // auto-animate 2007 -> latest with a live metric
   sankey?: boolean; // render the breakdown inline, as a chapter
   skip?: boolean;   // offer the escape hatch under this step's copy
+  extrude?: boolean; // raise the 3D neighborhood model for this beat
   voice?: string;   // id in narration.json; what the audio guide reads here
 };
 
@@ -2468,7 +2470,7 @@ const STORY_STEPS: StoryStep[] = [
     kicker: 'How Prop 13 works',
     title: 'Taxed on what you paid, not what it is worth',
     voice: 'how-prop-13-works',
-    body: 'Since 1978, California taxes a home on its purchase price, rising at most 2% a year, until it sells again. Prices have far outrun 2%. Hold a home for thirty years and the difference between your bill and a new buyer’s bill grows very large.',
+    body: 'Since 1978, California taxes a home on its purchase price, rising at most 2% a year, until it sells again. Prices have far outrun 2%. The longer you hold, the wider the gap between your bill and a new buyer’s.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 11.6, pitch: 45, bearing: 15 },
     skip: true,
   },
@@ -2476,6 +2478,7 @@ const STORY_STEPS: StoryStep[] = [
     kicker: 'The citywide picture',
     title: 'About $2 billion a year',
     voice: 'citywide',
+    extrude: true,
     body: 'Each block is a neighborhood, and taller and darker means a bigger gap. The Sunset, the Richmond, and West of Twin Peaks tower over the rest: older, long-held, single-family areas where the gap has compounded for decades.',
     view: { longitude: -122.4525, latitude: 37.752, zoom: 11.7, pitch: 50, bearing: -10 },
   },
@@ -2483,6 +2486,7 @@ const STORY_STEPS: StoryStep[] = [
     kicker: 'It compounds',
     title: 'The gap since 2007',
     voice: 'compounding',
+    extrude: true,
     body: 'Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners stayed put, the yearly savings grew with them. The blocks rise in real time.',
     view: { longitude: -122.4525, latitude: 37.752, zoom: 11.7, pitch: 50, bearing: -10 },
     play: true,
@@ -2523,6 +2527,7 @@ function StoryScroller({
   onSelectParcel,
   onSetTransfersOnly,
   onSetYear,
+  onSetExtrude,
   onExplore,
   onNarrate,
   audioOn,
@@ -2534,6 +2539,7 @@ function StoryScroller({
   onSelectParcel: (id: string, nbhd: string) => void;
   onSetTransfersOnly: (v: boolean) => void;
   onSetYear: (y: number | null) => void;
+  onSetExtrude: (v: boolean) => void;
   onExplore: () => void;
   onNarrate: (voiceId: string) => void;
   audioOn: boolean;
@@ -2552,6 +2558,7 @@ function StoryScroller({
       const s = STORY_STEPS[i];
       onFly(s.view);
       onSetTransfersOnly(s.transfersOnly ?? false);
+      onSetExtrude(s.extrude ?? false);
       if (!s.play && 'year' in s) onSetYear(s.year ?? null);
       if (s.voice) onNarrate(s.voice);
       if (s.parcel) {
@@ -2559,7 +2566,7 @@ function StoryScroller({
         setTimeout(() => onSelectParcel(p.id, p.nbhd), 900);
       }
     },
-    [onFly, onSelectParcel, onSetTransfersOnly, onSetYear, onNarrate],
+    [onFly, onSelectParcel, onSetTransfersOnly, onSetYear, onSetExtrude, onNarrate],
   );
 
   // deterministic active-step detection: whichever step's center is nearest the
