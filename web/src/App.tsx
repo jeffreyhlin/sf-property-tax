@@ -953,6 +953,17 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioOn]);
 
+  // A trust is only nameable when a recorded document actually says so. The
+  // assessment roll shows that a property was not reassessed, never why.
+  const trustDeed = useMemo(() => {
+    if (records.status !== 'done' || records.demo) return null;
+    return (
+      records.records.find(
+        (r) => r.kind === 'relational' && /\bTRUST\b|\bTR\b|LIVING|REVOC/i.test(r.grantee ?? ''),
+      ) ?? null
+    );
+  }, [records]);
+
   // Narrate a parcel when it is opened.
   useEffect(() => {
     if (!audioOn || !selected) return;
@@ -1863,16 +1874,40 @@ export default function App() {
           </div>
 
           <p className="panel-explain">
-            San Francisco taxes this property on <b>{fmt$k(sel.assessed)}</b>, the value on the
-            assessor's roll.{' '}
+            San Francisco taxes this property as if it's valued at <b>{fmt$k(sel.assessed)}</b>.
             {sel.estMarket ? (
+              <> However we estimate it would sell today for about <b>{fmt$k(sel.estMarket)}</b>.</>
+            ) : (
+              <> We have no market estimate for this one, so the gap is not shown below.</>
+            )}{' '}
+            {/* The mechanism has to be per parcel. Naming a trust on every
+                property would be false on the ones that simply sold, and the
+                assessment roll cannot tell a trust from any other unreassessed
+                transfer, which is the ~84% error in recorder-validation-findings.
+                So: name a trust only where a recorded deed shows one, otherwise
+                say the narrower thing we can actually support. */}
+            {sel.transferType === 'relational' ? (
+              trustDeed ? (
+                <>
+                  Instead it was transferred into <b>{trustDeed.grantee}</b> in{' '}
+                  {String(trustDeed.date).slice(0, 4)}, which carries the old taxed value forward.
+                </>
+              ) : (
+                <>
+                  Instead it changed hands{sel.transferYear ? ` in ${sel.transferYear}` : ''} without
+                  being reassessed, so the older taxed value carried forward.
+                </>
+              )
+            ) : sel.transferType === 'market' ? (
               <>
-                We estimate it would sell for about <b>{fmt$k(sel.estMarket)}</b>. Prop 13 holds the
-                taxed value near what the owner last paid until the property changes hands, and
-                everything below measures that gap.
+                It was reassessed{sel.transferYear ? ` in ${sel.transferYear}` : ''} when it last
+                sold, which is why the two are close.
               </>
             ) : (
-              <>We have no market estimate for this one, so the gap is not shown below.</>
+              <>
+                It has not changed hands since before 2007, so its taxed value has only risen with
+                the 2% a year Prop 13 allows.
+              </>
             )}
           </p>
 
