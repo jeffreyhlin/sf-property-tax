@@ -1704,14 +1704,16 @@ button.ghost:hover {
     bottom: var(--dock-h);
     width: 100%;
     max-width: none;
-    max-height: 76dvh;
+    /* just over half the screen, so the parcel you tapped stays visible on
+       the map above the sheet; the sheet itself scrolls for the rest */
+    max-height: 56dvh;
     border-radius: 16px 16px 0 0;
     border-left: 0; border-right: 0; border-bottom: 0;
     box-shadow: 0 -8px 30px rgba(80, 60, 20, 0.16);
     padding-bottom: 22px;
     -webkit-overflow-scrolling: touch;
   }
-  .board { height: 70dvh; }
+  .board { height: 56dvh; }
   /* grab affordance so the sheet reads as draggable-ish */
   .panel::before,
   .board::before {
@@ -2099,7 +2101,8 @@ button.ghost:hover {
     left: 0;
     right: 0;
     width: 100%;
-    height: 86%;
+    /* leave a band of map above the report; full screen is one tap away */
+    height: 74%;
     border-left: 0;
     border-top: 1px solid var(--rule-firm);
     border-radius: 16px 16px 0 0;
