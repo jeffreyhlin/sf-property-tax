@@ -2185,17 +2185,21 @@ button.ghost:hover {
   --rule-strong:  #c8c5bb;
   --rule-hover:   #b3afa4;
 
-  --accent:       #7e3345;
-  --accent-deep:  #692838;
-  --accent-wash:  #f2e7ea;
+  /* Burnt sienna. The oxblood read as dried blood on a page this pale, and
+     the fix for "too much orange" was rationing it to data, not draining the
+     warmth out of it. Two shades down from the original terracotta and a
+     little redder, so it still sits with the neutrals. */
+  --accent:       #bc5a32;
+  --accent-deep:  #9d4526;
+  --accent-wash:  #f6eae3;
   --tint:         #f7f6f2;
   --tint-warm:    #efedE7;
 
-  --ramp-1: #f7f4ee;
-  --ramp-2: #e2c9c2;
-  --ramp-3: #c1918c;
-  --ramp-4: #9c5860;
-  --ramp-5: #6e2638;
+  --ramp-1: #f8f5ef;
+  --ramp-2: #ecd6c2;
+  --ramp-3: #d8ab8b;
+  --ramp-4: #c07a51;
+  --ramp-5: #a4471f;
 
   --sale:         #3d6152;
   --warn:         #8a6a24;
@@ -2285,3 +2289,18 @@ body:has(.brand-v3) { font-family: var(--font-ui); }
   white-space: nowrap;
 }
 .brand-v3 .cmp-matrix tr.cmp-lead td { font-family: var(--font-display); font-size: 18px; }
+
+/* Sets up what the reader is looking at before any number appears. The panel
+   used to open on an address and an inferred-transfer badge. */
+.panel-explain {
+  margin: 10px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  padding: 9px 11px;
+  background: var(--tint);
+  border-left: 2px solid var(--rule-firm);
+  border-radius: 0 8px 8px 0;
+}
+.panel-explain b { color: var(--ink-strong); font-weight: 700; }
+.brand-v3 .panel-explain { border-left-color: var(--accent); }

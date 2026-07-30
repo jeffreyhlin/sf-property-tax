@@ -354,11 +354,11 @@ const RAMP_DEFAULT: [number, number, number][] = [
 // v3: the encoding is unchanged, only the hue. Keeping the same lightness steps
 // means the map still reads as a heat map rather than a flat wash.
 const RAMP_V3: [number, number, number][] = [
-  [247, 244, 238],
-  [226, 201, 194],
-  [193, 145, 140],
-  [156, 88, 96],
-  [110, 38, 56],
+  [248, 245, 239],
+  [236, 214, 194],
+  [216, 171, 139],
+  [192, 122, 81],
+  [164, 71, 31],
 ];
 // Read at module scope: it is a URL flag that cannot change during a session,
 // and doing it in an effect meant the first paint used the wrong ramp.
@@ -960,7 +960,7 @@ export default function App() {
     const pct = p.ratio != null ? `${Math.round(p.ratio * 100)} percent of its estimated value` : 'an unknown share of its value';
     narrateText(
       `${p.addr}. Taxed at ${pct}. About ${fmt$(p.savings ?? 0)} a year less than a new buyer would owe.` +
-        (p.transferYear ? ` Its tax basis was set in ${p.transferYear}.` : ''),
+        (p.transferYear ? ` Its taxable value was set in ${p.transferYear}.` : ''),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, audioOn]);
@@ -1441,7 +1441,7 @@ export default function App() {
             const p = (object as NbFeature).properties;
             const sav = nbSavings(p, typeFilter, year, rollYear);
             return {
-              html: `<b>${p.name}</b><br/>${TYPE_LABEL[typeFilter]} · ${year ?? rollYear}<br/>≈ ${fmt$k(sav)}/yr in tax savings · ${p.byType[typeFilter].relational.toLocaleString()} kept old basis<br/>click to zoom in`,
+              html: `<b>${p.name}</b><br/>${TYPE_LABEL[typeFilter]} · ${year ?? rollYear}<br/>≈ ${fmt$k(sav)}/yr in tax savings · ${p.byType[typeFilter].relational.toLocaleString()} kept an older taxable value<br/>click to zoom in`,
               style: { background: '#fffdf8', color: '#3a3226', fontSize: '12px', borderRadius: '6px', border: '1px solid #e0d8c4' },
             };
           }
@@ -1715,7 +1715,7 @@ export default function App() {
                 <div className="segmented">
                   <button className={nbhdRank === 'total' ? 'on' : ''} onClick={() => setNbhdRank('total')}>Total</button>
                   <button className={nbhdRank === 'perParcel' ? 'on' : ''} onClick={() => setNbhdRank('perParcel')}>Per home</button>
-                  <button className={nbhdRank === 'relational' ? 'on' : ''} onClick={() => setNbhdRank('relational')}>Kept old basis</button>
+                  <button className={nbhdRank === 'relational' ? 'on' : ''} onClick={() => setNbhdRank('relational')}>Kept older value</button>
                 </div>
                 <button className="chip" onClick={() => setShowCsvGate(true)}>↓ CSV</button>
               </div>
@@ -1727,7 +1727,7 @@ export default function App() {
                   <button className={boardCls === 'multi' ? 'on' : ''} onClick={() => setBoardCls('multi')}>Multi-family</button>
                 </div>
                 <div className="segmented">
-                  <button className={boardTab === 'relational' ? 'on' : ''} onClick={() => setBoardTab('relational')}>Kept old basis</button>
+                  <button className={boardTab === 'relational' ? 'on' : ''} onClick={() => setBoardTab('relational')}>Kept older value</button>
                   <button className={boardTab === 'all' ? 'on' : ''} onClick={() => setBoardTab('all')}>All savings</button>
                 </div>
               </div>
@@ -1757,8 +1757,7 @@ export default function App() {
                       {nbhdRank === 'perParcel' ? '/home/yr' : nbhdRank === 'relational' ? ' transfers' : '/yr'}
                     </span>
                   </div>
-                  <SavingsChart data={n.savingsByYear} caption="" />
-                  <div className="nb-sub">{n.parcels.toLocaleString()} homes · {n.relational.toLocaleString()} kept old basis</div>
+                  <div className="nb-sub">{n.parcels.toLocaleString()} homes · {n.relational.toLocaleString()} kept an older taxable value</div>
                 </button>
               ))}
             </div>
@@ -1863,6 +1862,20 @@ export default function App() {
             {sel.area ? ` · ${sel.area.toLocaleString()} sqft` : ''}
           </div>
 
+          <p className="panel-explain">
+            San Francisco taxes this property on <b>{fmt$k(sel.assessed)}</b>, the value on the
+            assessor's roll.{' '}
+            {sel.estMarket ? (
+              <>
+                We estimate it would sell for about <b>{fmt$k(sel.estMarket)}</b>. Prop 13 holds the
+                taxed value near what the owner last paid until the property changes hands, and
+                everything below measures that gap.
+              </>
+            ) : (
+              <>We have no market estimate for this one, so the gap is not shown below.</>
+            )}
+          </p>
+
           <span
             className={`badge badge-${sel.transferType}`}
             title="Inferred from assessment behavior in the tax rolls, not from recorded deeds. A transfer with no reassessment to market matches parent-child / grandparent-grandchild (Prop 58/193/19), spousal, and trust transfers."
@@ -1915,7 +1928,7 @@ export default function App() {
                       {kind === 'initial'
                         ? 'owner as of 2007'
                         : kind === 'relational'
-                          ? 'transfer kept the old basis'
+                          ? 'transfer kept the older taxable value'
                           : kind === 'market'
                             ? 'bought at market'
                             : 'partial reassessment'}
@@ -2512,14 +2525,14 @@ function CompareReport({
   const originOf = (p: ParcelProps) => {
     const y = basisOf(p);
     if (p.transferType === 'relational')
-      return `Basis set in ${y} by a transfer that did not trigger a reassessment.`;
-    if (p.transferType === 'market') return `Basis reset in ${y} by a market sale.`;
+      return `Still taxed on its ${y} value: it changed hands that year without being reassessed.`;
+    if (p.transferType === 'market') return `Reassessed in ${y} when it last sold.`;
     if (p.transferType === 'partial') return `Partly reassessed in ${y}.`;
     // Careful here: this is a statement about the assessment roll, not the deed
     // index. A parcel can sit on a pre-2007 basis and still have recorded deeds
     // since, which is exactly what "From the records" below may go on to cite.
     // "No reset on record" read as though the recorder showed nothing.
-    return 'Taxed on a basis set before 2007, with no reassessment since.';
+    return 'Taxed on a value set before 2007, with no reassessment since.';
   };
 
   // Only claim what the recorded documents actually support.
@@ -2640,7 +2653,7 @@ function CompareReport({
                 ['A new buyer pays', (p: ParcelProps) => fmt$((p.taxEst ?? 0) + (p.savings ?? 0)), false],
                 ['Assessed', (p: ParcelProps) => fmt$k(p.assessed), false],
                 ['Est. market', (p: ParcelProps) => (p.estMarket ? fmt$k(p.estMarket) : '—'), false],
-                ['Basis set', (p: ParcelProps) => String(basisOf(p) ?? 'before 2007'), false],
+                ['Taxed on its value from', (p: ParcelProps) => String(basisOf(p) ?? 'before 2007'), false],
               ] as Array<[string, (p: ParcelProps) => string, boolean]>).map(([label, get, lead]) => (
                 <tr key={label} className={lead ? 'cmp-lead' : undefined}>
                   <th scope="row">{label}</th>
@@ -2742,30 +2755,3 @@ function StreetComparison({
   );
 }
 
-function SavingsChart({ data, caption }: { data: Record<string, number>; caption?: string }) {
-  const years = Object.keys(data).map(Number).sort((a, b) => a - b);
-  if (years.length < 2) return null;
-  const w = 292, h = 84, pad = 8;
-  const vals = years.map((y) => data[String(y)]);
-  const maxV = Math.max(...vals, 1);
-  const x = (i: number) => pad + (i / (years.length - 1)) * (w - 2 * pad);
-  const y = (v: number) => h - pad - (v / maxV) * (h - 2 * pad - 14);
-  const line = vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-  const area = `${line} L${x(vals.length - 1).toFixed(1)},${h - pad} L${x(0).toFixed(1)},${h - pad} Z`;
-  return (
-    <div className="savings-chart">
-      <svg width={w} height={h}>
-        <path d={area} className="savings-area" />
-        <path d={line} className="savings-line" />
-        <text x={w - pad} y={y(vals[vals.length - 1]) - 5} textAnchor="end" className="chart-label">
-          {fmt$k(vals[vals.length - 1])}/yr
-        </text>
-        <text x={pad} y={h - 12} className="chart-label">{years[0]}</text>
-        <text x={w - pad} y={h - 12} textAnchor="end" className="chart-label">{years[years.length - 1]}</text>
-      </svg>
-      {caption !== '' && (
-        <div className="legend-note">{caption ?? 'citywide est. tax savings by year · early years understated'}</div>
-      )}
-    </div>
-  );
-}
