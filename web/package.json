@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:labels": "node --experimental-strip-types src/labelTiers.test.mjs"
   },
   "dependencies": {
     "deck.gl": "^9.3.6",

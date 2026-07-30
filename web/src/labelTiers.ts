@@ -141,3 +141,48 @@ export function blockLabels(
   }
   return out;
 }
+
+/** A screen-space rectangle as [left, top, right, bottom]. */
+export type ScreenRect = [number, number, number, number];
+
+export type CullOpts = {
+  /** map surface size in CSS pixels */
+  size: [number, number];
+  /** UI furniture to keep labels out from under */
+  rects: ScreenRect[];
+  /** half a pill, so a label is dropped before its edge slides under chrome */
+  padX?: number;
+  padY?: number;
+  /** keep labels this far inside the surface so they are not clipped */
+  edge?: number;
+};
+
+/**
+ * Drop labels that fall off the surface or land under the UI.
+ *
+ * CollisionFilterExtension resolves labels against each other on the GPU but
+ * knows nothing about DOM overlays, so without this a label happily renders
+ * under the search bar. Pure and projection-agnostic so it can be tested
+ * without a browser: `project` maps [lng, lat] to [x, y] in CSS pixels.
+ *
+ * Returns the input untouched when the surface has no usable size. A hidden
+ * tab or a mid-resize mount reports zero, and culling against that would blank
+ * every label rather than leaving them alone.
+ */
+export function cullToScreen<T extends { position: [number, number] }>(
+  labels: T[],
+  project: (pos: [number, number]) => [number, number],
+  { size, rects, padX = 30, padY = 12, edge = 8 }: CullOpts,
+): T[] {
+  const [vw, vh] = size;
+  if (!(vw >= 240 && vh >= 240)) return labels;
+  return labels.filter((l) => {
+    const [x, y] = project(l.position);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    if (x < edge + padX || y < edge + padY || x > vw - edge - padX || y > vh - edge - padY) return false;
+    for (const [x1, y1, x2, y2] of rects) {
+      if (x > x1 - padX && x < x2 + padX && y > y1 - padY && y < y2 + padY) return false;
+    }
+    return true;
+  });
+}

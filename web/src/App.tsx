@@ -16,6 +16,7 @@ import { SankeyView } from './SankeyView';
 import { narrate, narrateText, stopNarration, primeNarration } from './narrator';
 import {
   tierForZoom, blockLabels, labelPriority, fmtPct, fmtUsd, MAX_LABELS,
+  cullToScreen,
   type MapLabel, type LabelBias, type LabelText,
 } from './labelTiers';
 // PMTiles overview layer (pipeline/tiles.py builds data/parcels.pmtiles) is staged
@@ -561,7 +562,22 @@ export default function App() {
     [],
   );
   const [labelBias, setLabelBias] = useState<LabelBias>('savings');
-  const [labelText, setLabelText] = useState<LabelText>('pct');
+  // The screen-space cull needs the real surface size. Memoising it off view
+  // state alone meant a result computed before first layout stuck around, and
+  // a window resize never invalidated it.
+  const [mapSize, setMapSize] = useState<[number, number]>([0, 0]);
+  const [chromeRects, setChromeRects] = useState<Array<[number, number, number, number]>>([]);
+  // Bumped by the ResizeObserver so the post-paint measurement re-runs on
+  // resize as well as on state that opens or closes a panel.
+  const [chromeTick, setChromeTick] = useState(0);
+  useEffect(() => {
+    const el = document.querySelector('.map-pane');
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setChromeTick((n) => n + 1));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const [labelText, setLabelText] = useState<LabelText>('usd');
 
   // the year sweep only lives in the Story; leaving it snaps back to current
   useEffect(() => {
@@ -929,6 +945,47 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, audioOn]);
 
+  // Measure the UI furniture after paint, so a panel that just opened is
+  // actually in the DOM when we read it. rAF gets us past layout; the same-rect
+  // check keeps this from looping through state updates forever.
+  useEffect(() => {
+    if (!labelProto) return;
+    const SELECTORS =
+      '.topbar, .legend, .dock, .panel, .labelproto, .year-slider, .cmp-tray, .board, .rankings, .about-overlay';
+    let raf = 0;
+    const measure = () => {
+      const pane = document.querySelector('.map-pane') as HTMLElement | null;
+      if (pane) {
+        const pr = pane.getBoundingClientRect();
+        const w = Math.round(pr.width);
+        const h = Math.round(pr.height);
+        setMapSize(([pw, ph]) => (Math.abs(pw - w) > 8 || Math.abs(ph - h) > 8 ? [w, h] : [pw, ph]));
+      }
+      const next: Array<[number, number, number, number]> = [];
+      document.querySelectorAll(SELECTORS).forEach((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        if (r.width > 2 && r.height > 2) next.push([r.left, r.top, r.right, r.bottom]);
+      });
+      setChromeRects((prev) => {
+        const same =
+          prev.length === next.length &&
+          prev.every((p, i) => p.every((v, j) => Math.abs(v - next[i][j]) < 2));
+        return same ? prev : next;
+      });
+    };
+    raf = requestAnimationFrame(() => {
+      measure();
+      // panels animate in, so take a second reading once the transition lands
+      raf = requestAnimationFrame(measure);
+    });
+    const t = setTimeout(measure, 420);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelProto, selected?.id, showRankings, compareOpen, compareFull, showAbout, chromeTick, view]);
+
   // Fetch the manifest up front, both so the first beat does not wait on it
   // and to decide whether to offer the guide at all.
   const [hasVoice, setHasVoice] = useState(false);
@@ -1132,10 +1189,12 @@ export default function App() {
 
   const viewportBounds = useMemo((): [number, number, number, number] | null => {
     if (!labelProto) return null;
+    // No trustworthy size means no culling, rather than culling everything.
+    if (mapSize[0] < 240 || mapSize[1] < 240) return null;
     try {
       const vp = new WebMercatorViewport({
-        width: Math.max(window.innerWidth, 1),
-        height: Math.max(window.innerHeight, 1),
+        width: mapSize[0],
+        height: mapSize[1],
         longitude: viewState.longitude,
         latitude: viewState.latitude,
         zoom: viewState.zoom,
@@ -1162,20 +1221,54 @@ export default function App() {
       return null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelProto, viewKey]);
+  }, [labelProto, viewKey, mapSize]);
 
   // Collision filtering decides what is legible. This narrows the candidates to
   // what is actually on screen first, then keeps the highest priority ones, so
   // zooming into a block re-picks winners from that block rather than from
   // every chunk in memory.
+  const labelStats = useRef({ all: 0, inView: 0, afterChrome: 0, rects: 0 });
   const labelShown = useMemo(() => {
     let pool = labelData;
+    labelStats.current.all = pool.length;
     if (viewportBounds) {
       const [w, sth, e, n] = viewportBounds;
       pool = pool.filter(
         (l) => l.position[0] >= w && l.position[0] <= e && l.position[1] >= sth && l.position[1] <= n,
       );
     }
+
+    // CollisionFilterExtension only knows about other GPU features, so on its
+    // own it will happily place a label under the search bar or the legend.
+    // Project each candidate and drop the ones landing on chrome. Reading the
+    // rects from the DOM means this tracks panels opening and closing rather
+    // than hard-coding where the furniture sits.
+    // Measure the surface deck actually draws to, not the window: they differ
+    // in embeds and in panes that get collapsed. A zero-size or absurdly small
+    // viewport means layout has not settled, and culling against it would drop
+    // every label, so skip the pass rather than blank the map.
+    labelStats.current.inView = pool.length;
+    labelStats.current.rects = chromeRects.length;
+    if (labelProto && pool.length && mapSize[0] >= 240) {
+      try {
+        const vp = new WebMercatorViewport({
+          width: mapSize[0],
+          height: mapSize[1],
+          longitude: viewState.longitude,
+          latitude: viewState.latitude,
+          zoom: viewState.zoom,
+          pitch: viewState.pitch ?? 0,
+          bearing: viewState.bearing ?? 0,
+        });
+        pool = cullToScreen(pool, (pos) => vp.project(pos) as [number, number], {
+          size: mapSize,
+          rects: chromeRects,
+        });
+      } catch (err) {
+        console.warn('[labels] screen-space cull failed, chrome overlap possible:', err);
+      }
+    }
+    labelStats.current.afterChrome = pool.length;
     if (pool.length <= MAX_LABELS * 8) return pool;
     return [...pool]
       .sort(
@@ -1184,7 +1277,9 @@ export default function App() {
           labelPriority(a, labelBias, selected?.id ?? null, labelMedian),
       )
       .slice(0, MAX_LABELS * 8);
-  }, [labelData, viewportBounds, labelBias, selected?.id, labelMedian]);
+    // viewKey covers pan and zoom; selected covers the parcel panel opening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelData, viewportBounds, viewKey, mapSize, chromeRects, labelProto, labelBias, selected?.id, labelMedian]);
 
   const labelLayer = useMemo(
     () =>
@@ -1531,7 +1626,14 @@ export default function App() {
       {labelProto && (
         <div className="labelproto">
           <span className="lp-tier">{labelTier}</span>
-          <span className="lp-count">{labelShown.length} labels</span>
+          <span className="lp-count">
+            {labelShown.length} labels
+            <em>
+              {' '}· {labelStats.current.all}→{labelStats.current.inView} in view →{' '}
+              {labelStats.current.afterChrome} clear of {chromeRects.length} panels · pane{' '}
+              {mapSize[0]}×{mapSize[1]}
+            </em>
+          </span>
           <div className="lp-bias">
             <button className={labelBias === 'spread' ? 'on' : ''} onClick={() => setLabelBias('spread')}>
               spread
