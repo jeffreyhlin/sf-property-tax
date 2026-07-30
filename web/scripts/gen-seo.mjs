@@ -19,7 +19,19 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const HTML = join(HERE, '..', 'index.html');
 const ORIGIN = 'https://sf-property-tax.netlify.app';
 
-const { FAQ } = await import(join(HERE, '..', 'src', 'faq.ts'));
+// faq.ts is TypeScript, and type-stripping imports need Node 22.6+ while
+// Netlify's CLI builds ran this under 20 and failed. The data is a plain
+// literal, so extract it from the source text instead: everything from the
+// first '[' after the FAQ declaration to the matching close.
+const faqSrc = readFileSync(join(HERE, '..', 'src', 'faq.ts'), 'utf8');
+const declAt = faqSrc.indexOf('export const FAQ');
+const start = faqSrc.indexOf('[', declAt);
+const end = faqSrc.lastIndexOf('];');
+if (declAt < 0 || start < 0 || end < 0) {
+  console.error('gen-seo: could not locate the FAQ literal in faq.ts');
+  process.exit(1);
+}
+const FAQ = new Function('return ' + faqSrc.slice(start, end + 1))();
 
 const faqPage = {
   '@context': 'https://schema.org',

@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "test:labels": "node --experimental-strip-types src/labelTiers.test.mjs",
     "lint:copy": "node src/copygrep.mjs",
-    "gen:seo": "node --experimental-strip-types scripts/gen-seo.mjs",
+    "gen:seo": "node scripts/gen-seo.mjs",
     "prebuild": "npm run gen:seo"
   },
   "dependencies": {
