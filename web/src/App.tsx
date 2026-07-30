@@ -1901,7 +1901,7 @@ export default function App() {
             ) : sel.transferType === 'market' ? (
               <>
                 It was reassessed{sel.transferYear ? ` in ${sel.transferYear}` : ''} when it last
-                sold, which is why the two are close.
+                sold, so there is little gap to show.
               </>
             ) : (
               <>
