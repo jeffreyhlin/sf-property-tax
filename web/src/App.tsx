@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DeckGL from '@deck.gl/react';
-import { GeoJsonLayer } from '@deck.gl/layers';
+import { GeoJsonLayer, TextLayer } from '@deck.gl/layers';
+import { CollisionFilterExtension } from '@deck.gl/extensions';
 import {
   FlyToInterpolator,
   WebMercatorViewport,
@@ -13,6 +14,10 @@ import './App.css';
 import { FAQ } from './faq';
 import { SankeyView } from './SankeyView';
 import { narrate, narrateText, stopNarration, primeNarration } from './narrator';
+import {
+  tierForZoom, blockLabels, labelPriority, fmtPct, MAX_LABELS,
+  type MapLabel, type LabelBias,
+} from './labelTiers';
 // PMTiles overview layer (pipeline/tiles.py builds data/parcels.pmtiles) is staged
 // but not wired: MVTLayer needs a data source to activate tiling; see docs/proposals.md.
 // import { PMTilesLayer } from './pmtilesLayer';
@@ -549,6 +554,13 @@ export default function App() {
   const [loadingChunks, setLoadingChunks] = useState(0);
 
   const embed = useMemo(() => new URLSearchParams(window.location.search).get('embed') === '1', []);
+  // Label-tier prototype. Dev builds only, behind ?labels=1, so it cannot ship
+  // by accident while we are still deciding whether it holds up.
+  const labelProto = useMemo(
+    () => import.meta.env.DEV && new URLSearchParams(window.location.search).get('labels') === '1',
+    [],
+  );
+  const [labelBias, setLabelBias] = useState<LabelBias>('spread');
 
   // the year sweep only lives in the Story; leaving it snaps back to current
   useEffect(() => {
@@ -1058,6 +1070,114 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chunkVersion, transfersOnly, typeFilter, showParcels, extrude, selected?.id, year]);
 
+  // ---- label tiers (prototype) --------------------------------------------
+  const labelTier = tierForZoom(viewState.zoom);
+
+  const labelData = useMemo((): MapLabel[] => {
+    if (!labelProto) return [];
+
+    if (labelTier === 'neighborhood') {
+      return nbGeo
+        .filter((f) => f.properties.center)
+        .map((f) => ({
+          key: `nb-${f.properties.slug}`,
+          text: fmtPct(f.properties.medianRatio),
+          position: f.properties.center as [number, number],
+          ratio: f.properties.medianRatio,
+          dollars: nbSavings(f.properties, typeFilter, year, meta?.rollYear ?? 2025),
+          count: 0,
+        }));
+    }
+
+    // Both lower tiers read from whichever chunks are loaded, which is exactly
+    // the set a reader can currently see.
+    const rows: Array<{ props: ParcelProps; lon: number; lat: number }> = [];
+    for (const [, entry] of chunksRef.current) {
+      for (const f of chunkData(entry, transfersOnly, typeFilter)) {
+        const g = f.geometry as { type: string; coordinates: number[][][] | number[][][][] };
+        const first =
+          g.type === 'MultiPolygon'
+            ? (g.coordinates as number[][][][])[0]?.[0]?.[0]
+            : (g.coordinates as number[][][])[0]?.[0];
+        if (!first) continue;
+        rows.push({ props: f.properties, lon: first[0], lat: first[1] });
+      }
+    }
+
+    if (labelTier === 'block') return blockLabels(rows);
+
+    return rows.map(({ props, lon, lat }) => ({
+      key: props.id,
+      text: fmtPct(props.ratio ?? null),
+      position: [lon, lat] as [number, number],
+      ratio: props.ratio ?? null,
+      dollars: props.savings ?? 0,
+      count: 1,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelProto, labelTier, nbGeo, chunkVersion, transfersOnly, typeFilter, year, meta?.rollYear]);
+
+  // median of whatever is on screen, so "spread" scores deviation from local
+  // normal rather than from a citywide number that means nothing on this block
+  const labelMedian = useMemo(() => {
+    const rs = labelData.map((l) => l.ratio).filter((r): r is number => r != null).sort((a, b) => a - b);
+    return rs.length ? rs[Math.floor(rs.length / 2)] : 0.6;
+  }, [labelData]);
+
+  // Collision filtering decides what is legible; this only stops us handing the
+  // GPU tens of thousands of glyphs at parcel tier. Highest priority first so
+  // the trim keeps the labels that would have won anyway.
+  const labelShown = useMemo(() => {
+    if (labelData.length <= MAX_LABELS * 12) return labelData;
+    return [...labelData]
+      .sort(
+        (a, b) =>
+          labelPriority(b, labelBias, selected?.id ?? null, labelMedian) -
+          labelPriority(a, labelBias, selected?.id ?? null, labelMedian),
+      )
+      .slice(0, MAX_LABELS * 12);
+  }, [labelData, labelBias, selected?.id, labelMedian]);
+
+  const labelLayer = useMemo(
+    () =>
+      new TextLayer<MapLabel>({
+        id: `labels-${labelTier}`,
+        data: labelShown,
+        visible: labelProto,
+        pickable: false,
+        getPosition: (d) => d.position,
+        getText: (d) => d.text,
+        getSize: labelTier === 'parcel' ? 12 : labelTier === 'block' ? 13 : 15,
+        sizeUnits: 'pixels',
+        getColor: [31, 30, 27, 255],
+        background: true,
+        getBackgroundColor: [250, 249, 246, 235],
+        backgroundPadding: [6, 3, 6, 3],
+        getBorderColor: [200, 197, 187, 255],
+        getBorderWidth: 1,
+        fontFamily: 'Avenir Next, -apple-system, system-ui, sans-serif',
+        fontWeight: 600,
+        characterSet: '0123456789%—',
+        extensions: [new CollisionFilterExtension()],
+        // The neighbourhood model is extruded, so ground-level text ends up
+        // inside the geometry. Drawing labels without depth testing floats them
+        // over the model instead of being buried by it.
+        parameters: { depthCompare: 'always' },
+        billboard: true,
+        updateTriggers: {
+          getCollisionPriority: [labelBias, selected?.id, labelMedian],
+        },
+        ...({
+          collisionGroup: 'labels',
+          // pad the hit box so survivors are not drawn shoulder to shoulder
+          collisionTestProps: { sizeScale: 2.4 },
+          getCollisionPriority: (d: MapLabel) =>
+            labelPriority(d, labelBias, selected?.id ?? null, labelMedian),
+        } as object),
+      }),
+    [labelShown, labelTier, labelProto, labelBias, selected?.id, labelMedian],
+  );
+
   // 3D extruded neighborhood model: height + color both encode annual est. tax
   // savings for the active property type + year, so the timeline animates the
   // gap growing and neighborhoods read as comparable 3D bars.
@@ -1150,7 +1270,7 @@ export default function App() {
         viewState={viewState}
         onViewStateChange={(e) => setViewState(e.viewState as MapViewState)}
         controller={true}
-        layers={[nbLayer, ...parcelLayers]}
+        layers={[nbLayer, ...parcelLayers, ...(labelProto ? [labelLayer] : [])]}
         getTooltip={({ object, layer }: PickingInfo) => {
           if (!object) return null;
           if (layer?.id === 'nbhd-3d') {
@@ -1359,6 +1479,20 @@ export default function App() {
         </div>
       )}
 
+      {labelProto && (
+        <div className="labelproto">
+          <span className="lp-tier">{labelTier}</span>
+          <span className="lp-count">{labelShown.length} labels</span>
+          <div className="lp-bias">
+            <button className={labelBias === 'spread' ? 'on' : ''} onClick={() => setLabelBias('spread')}>
+              spread
+            </button>
+            <button className={labelBias === 'savings' ? 'on' : ''} onClick={() => setLabelBias('savings')}>
+              savings
+            </button>
+          </div>
+        </div>
+      )}
       {view === 'explore' && (
       <div className="legend">
         <div className="legend-title">how far below market it's taxed</div>

@@ -2084,3 +2084,28 @@ button.ghost:hover {
   color: #b25007;
   font-weight: 700;
 }
+
+/* ---- label-tier prototype readout (dev only, ?labels=1) ---- */
+.labelproto {
+  position: absolute;
+  top: 96px;
+  left: 14px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: #fffdf8f2;
+  border: 1px solid #e2d9c6;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.labelproto .lp-tier { font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+.labelproto .lp-count { color: #8a8070; }
+.labelproto .lp-bias { display: flex; gap: 4px; }
+.labelproto .lp-bias button {
+  border: 1px solid #ddd3bd; background: #fffdf8; border-radius: 999px;
+  padding: 3px 9px; font-size: 11px; cursor: pointer; color: #5a5142;
+}
+.labelproto .lp-bias button.on { background: #b25007; border-color: #b25007; color: #fffdf8; }
