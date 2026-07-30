@@ -205,7 +205,11 @@ const INITIAL_VIEW: MapViewState = {
   longitude: -122.4425,
   latitude: 37.758,
   zoom: 11.6,
-  pitch: 42, // tilt so the extruded neighborhood model reads as 3D
+  // Flat and top-down. The old opening pitched 42 degrees into a fully
+  // extruded neighborhood model, which read as tall blocks hiding the city.
+  // Height is now opt-in through the 3D toggle; the citywide numbers arrive
+  // as label pills instead.
+  pitch: 0,
   bearing: 0,
 };
 
@@ -628,6 +632,9 @@ export default function App() {
     () => import.meta.env.DEV && new URLSearchParams(window.location.search).get('labels') === '1',
     [],
   );
+  // The pills themselves ship for everyone in explore; labelsOn above now
+  // gates only the dev readout and its bias/unit switches.
+  const labelsOn = view === 'explore';
   const [labelBias, setLabelBias] = useState<LabelBias>('savings');
   // The screen-space cull needs the real surface size. Memoising it off view
   // state alone meant a result computed before first layout stuck around, and
@@ -1027,7 +1034,7 @@ export default function App() {
   // actually in the DOM when we read it. rAF gets us past layout; the same-rect
   // check keeps this from looping through state updates forever.
   useEffect(() => {
-    if (!labelProto) return;
+    if (!labelsOn) return;
     const SELECTORS =
       '.topbar, .legend, .dock, .panel, .labelproto, .year-slider, .cmp-tray, .board, .rankings, .about-overlay';
     let raf = 0;
@@ -1062,7 +1069,7 @@ export default function App() {
       clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelProto, selected?.id, showRankings, compareOpen, compareFull, showAbout, chromeTick, view]);
+  }, [labelsOn, selected?.id, showRankings, compareOpen, compareFull, showAbout, chromeTick, view]);
 
   // Fetch the manifest up front, both so the first beat does not wait on it
   // and to decide whether to offer the guide at all.
@@ -1210,7 +1217,7 @@ export default function App() {
   const labelTier = tierForZoom(viewState.zoom);
 
   const labelData = useMemo((): MapLabel[] => {
-    if (!labelProto) return [];
+    if (!labelsOn) return [];
 
     if (labelTier === 'neighborhood') {
       return nbGeo
@@ -1251,7 +1258,7 @@ export default function App() {
       count: 1,
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelProto, labelTier, nbGeo, chunkVersion, transfersOnly, typeFilter, year, meta?.rollYear]);
+  }, [labelsOn, labelTier, nbGeo, chunkVersion, transfersOnly, typeFilter, year, meta?.rollYear]);
 
   // median of whatever is on screen, so "spread" scores deviation from local
   // normal rather than from a citywide number that means nothing on this block
@@ -1266,7 +1273,7 @@ export default function App() {
   const viewKey = `${viewState.longitude.toFixed(3)},${viewState.latitude.toFixed(3)},${Math.round(viewState.zoom * 4) / 4}`;
 
   const viewportBounds = useMemo((): [number, number, number, number] | null => {
-    if (!labelProto) return null;
+    if (!labelsOn) return null;
     // No trustworthy size means no culling, rather than culling everything.
     if (mapSize[0] < 240 || mapSize[1] < 240) return null;
     try {
@@ -1299,7 +1306,7 @@ export default function App() {
       return null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelProto, viewKey, mapSize]);
+  }, [labelsOn, viewKey, mapSize]);
 
   // Collision filtering decides what is legible. This narrows the candidates to
   // what is actually on screen first, then keeps the highest priority ones, so
@@ -1327,7 +1334,7 @@ export default function App() {
     // every label, so skip the pass rather than blank the map.
     labelStats.current.inView = pool.length;
     labelStats.current.rects = chromeRects.length;
-    if (labelProto && pool.length && mapSize[0] >= 240) {
+    if (labelsOn && pool.length && mapSize[0] >= 240) {
       try {
         const vp = new WebMercatorViewport({
           width: mapSize[0],
@@ -1357,7 +1364,7 @@ export default function App() {
       .slice(0, MAX_LABELS * 8);
     // viewKey covers pan and zoom; selected covers the parcel panel opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelData, viewportBounds, viewKey, mapSize, chromeRects, labelProto, labelBias, selected?.id, labelMedian]);
+  }, [labelData, viewportBounds, viewKey, mapSize, chromeRects, labelsOn, labelBias, selected?.id, labelMedian]);
 
   const labelText4 = useCallback(
     (d: MapLabel) => (labelText === 'usd' ? fmtUsd(d.dollars) : fmtPct(d.ratio)),
@@ -1373,7 +1380,7 @@ export default function App() {
         // fmtUsd returns '' for zero-dollar labels; an empty sprite would still
         // claim collision space, so drop them before the layer sees them
         data: labelShown.filter((d) => labelText4(d) !== ''),
-        visible: labelProto,
+        visible: labelsOn,
         pickable: false,
         getPosition: (d) => d.position,
         getIcon: (d) => {
@@ -1402,25 +1409,25 @@ export default function App() {
             labelPriority(d, labelBias, selected?.id ?? null, labelMedian),
         } as object),
       }),
-    [labelShown, labelTier, labelProto, labelBias, labelText4, labelText, selected?.id, labelMedian],
+    [labelShown, labelTier, labelsOn, labelBias, labelText4, labelText, selected?.id, labelMedian],
   );
 
   // 3D extruded neighborhood model: height + color both encode annual est. tax
   // savings for the active property type + year, so the timeline animates the
   // gap growing and neighborhoods read as comparable 3D bars.
-  const MAX_HEIGHT = 6000;
+  const MAX_HEIGHT = 3800;
   const rollYear = meta?.rollYear ?? 2025;
   const nbLayer = new GeoJsonLayer<NbFeatureProps>({
     id: 'nbhd-3d',
     data: { type: 'FeatureCollection', features: nbGeo } as never,
     visible: !showParcels,
-    extruded: true,
-    wireframe: true,
+    extruded: extrude,
+    wireframe: extrude,
     material: { ambient: 0.6, diffuse: 0.5, shininess: 20 },
     // height = total annual savings (magnitude); color = how deep the subsidy
     // runs (median assessed/market), same ramp as the parcels for consistency
     getElevation: (f) =>
-      (nbSavings(f.properties, typeFilter, year, rollYear) / savingsRef) * MAX_HEIGHT,
+      extrude ? (nbSavings(f.properties, typeFilter, year, rollYear) / savingsRef) * MAX_HEIGHT : 0,
     getFillColor: (f) => {
       const [r, g, b] = ratioColor(f.properties.medianRatio, false);
       return [r, g, b, 235];
@@ -1446,7 +1453,7 @@ export default function App() {
       }
     },
     updateTriggers: {
-      getElevation: [typeFilter, year, savingsRef],
+      getElevation: [typeFilter, year, savingsRef, extrude],
       getFillColor: [typeFilter, year, savingsRef],
     },
     // smoothly tween heights + colors between years instead of hard-cutting
@@ -1497,7 +1504,7 @@ export default function App() {
         viewState={viewState}
         onViewStateChange={(e) => setViewState(e.viewState as MapViewState)}
         controller={true}
-        layers={[nbLayer, ...parcelLayers, ...(labelProto ? [labelLayer] : [])]}
+        layers={[nbLayer, ...parcelLayers, ...(labelsOn ? [labelLayer] : [])]}
         getTooltip={({ object, layer }: PickingInfo) => {
           if (!object) return null;
           if (layer?.id === 'nbhd-3d') {
@@ -1743,7 +1750,13 @@ export default function App() {
           <span>taxed far below</span>
           <span>near market</span>
         </div>
-        {!showParcels && <div className="legend-note">Taller blocks keep more each year. Darker is taxed further below market. Click one to zoom in.</div>}
+        {!showParcels && (
+          <div className="legend-note">
+            {extrude
+              ? 'Taller blocks keep more each year. Darker is taxed further below market. Click one to zoom in.'
+              : 'Each label is what that neighborhood keeps per year. Darker is taxed further below market. Click one to zoom in.'}
+          </div>
+        )}
         {showParcels && <div className="legend-note">Gray parcels have no market estimate.</div>}
         {showParcels && transfersOnly && (
           <div className="legend-note">
