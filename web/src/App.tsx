@@ -15,8 +15,8 @@ import { FAQ } from './faq';
 import { SankeyView } from './SankeyView';
 import { narrate, narrateText, stopNarration, primeNarration } from './narrator';
 import {
-  tierForZoom, blockLabels, labelPriority, fmtPct, MAX_LABELS,
-  type MapLabel, type LabelBias,
+  tierForZoom, blockLabels, labelPriority, fmtPct, fmtUsd, MAX_LABELS,
+  type MapLabel, type LabelBias, type LabelText,
 } from './labelTiers';
 // PMTiles overview layer (pipeline/tiles.py builds data/parcels.pmtiles) is staged
 // but not wired: MVTLayer needs a data source to activate tiling; see docs/proposals.md.
@@ -560,7 +560,8 @@ export default function App() {
     () => import.meta.env.DEV && new URLSearchParams(window.location.search).get('labels') === '1',
     [],
   );
-  const [labelBias, setLabelBias] = useState<LabelBias>('spread');
+  const [labelBias, setLabelBias] = useState<LabelBias>('savings');
+  const [labelText, setLabelText] = useState<LabelText>('pct');
 
   // the year sweep only lives in the Story; leaving it snaps back to current
   useEffect(() => {
@@ -1124,19 +1125,66 @@ export default function App() {
     return rs.length ? rs[Math.floor(rs.length / 2)] : 0.6;
   }, [labelData]);
 
-  // Collision filtering decides what is legible; this only stops us handing the
-  // GPU tens of thousands of glyphs at parcel tier. Highest priority first so
-  // the trim keeps the labels that would have won anyway.
+  // Quantised so panning recomputes at roughly 200m steps rather than every
+  // frame. Without this the label set is stable while you move, which reads as
+  // labels that refuse to update.
+  const viewKey = `${viewState.longitude.toFixed(3)},${viewState.latitude.toFixed(3)},${Math.round(viewState.zoom * 4) / 4}`;
+
+  const viewportBounds = useMemo((): [number, number, number, number] | null => {
+    if (!labelProto) return null;
+    try {
+      const vp = new WebMercatorViewport({
+        width: Math.max(window.innerWidth, 1),
+        height: Math.max(window.innerHeight, 1),
+        longitude: viewState.longitude,
+        latitude: viewState.latitude,
+        zoom: viewState.zoom,
+        // A pitched viewport's far plane runs to the horizon, which would put
+        // half the city "in bounds". Bounds are only for culling, so read them
+        // flat and pad instead.
+        pitch: 0,
+        bearing: viewState.bearing ?? 0,
+      });
+      // Flat [minLng, minLat, maxLng, maxLat]. Destructuring this as nested
+      // pairs throws, and swallowing that in a catch silently disabled culling
+      // for the whole prototype, which looked like labels refusing to update.
+      const b = vp.getBounds();
+      if (!Array.isArray(b) || b.length !== 4 || b.some((v) => !Number.isFinite(v))) {
+        console.warn('[labels] unexpected getBounds shape, culling off:', b);
+        return null;
+      }
+      const [w, sth, e, n] = b as [number, number, number, number];
+      const padX = (e - w) * 0.15;
+      const padY = (n - sth) * 0.15;
+      return [w - padX, sth - padY, e + padX, n + padY];
+    } catch (err) {
+      console.warn('[labels] viewport bounds failed, culling off:', err);
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelProto, viewKey]);
+
+  // Collision filtering decides what is legible. This narrows the candidates to
+  // what is actually on screen first, then keeps the highest priority ones, so
+  // zooming into a block re-picks winners from that block rather than from
+  // every chunk in memory.
   const labelShown = useMemo(() => {
-    if (labelData.length <= MAX_LABELS * 12) return labelData;
-    return [...labelData]
+    let pool = labelData;
+    if (viewportBounds) {
+      const [w, sth, e, n] = viewportBounds;
+      pool = pool.filter(
+        (l) => l.position[0] >= w && l.position[0] <= e && l.position[1] >= sth && l.position[1] <= n,
+      );
+    }
+    if (pool.length <= MAX_LABELS * 8) return pool;
+    return [...pool]
       .sort(
         (a, b) =>
           labelPriority(b, labelBias, selected?.id ?? null, labelMedian) -
           labelPriority(a, labelBias, selected?.id ?? null, labelMedian),
       )
-      .slice(0, MAX_LABELS * 12);
-  }, [labelData, labelBias, selected?.id, labelMedian]);
+      .slice(0, MAX_LABELS * 8);
+  }, [labelData, viewportBounds, labelBias, selected?.id, labelMedian]);
 
   const labelLayer = useMemo(
     () =>
@@ -1146,7 +1194,7 @@ export default function App() {
         visible: labelProto,
         pickable: false,
         getPosition: (d) => d.position,
-        getText: (d) => d.text,
+        getText: (d) => (labelText === 'usd' ? fmtUsd(d.dollars) : fmtPct(d.ratio)),
         getSize: labelTier === 'parcel' ? 12 : labelTier === 'block' ? 13 : 15,
         sizeUnits: 'pixels',
         getColor: [31, 30, 27, 255],
@@ -1157,7 +1205,7 @@ export default function App() {
         getBorderWidth: 1,
         fontFamily: 'Avenir Next, -apple-system, system-ui, sans-serif',
         fontWeight: 600,
-        characterSet: '0123456789%—',
+        characterSet: '0123456789%$kMB.,',
         extensions: [new CollisionFilterExtension()],
         // The neighbourhood model is extruded, so ground-level text ends up
         // inside the geometry. Drawing labels without depth testing floats them
@@ -1166,6 +1214,7 @@ export default function App() {
         billboard: true,
         updateTriggers: {
           getCollisionPriority: [labelBias, selected?.id, labelMedian],
+          getText: [labelText],
         },
         ...({
           collisionGroup: 'labels',
@@ -1175,7 +1224,7 @@ export default function App() {
             labelPriority(d, labelBias, selected?.id ?? null, labelMedian),
         } as object),
       }),
-    [labelShown, labelTier, labelProto, labelBias, selected?.id, labelMedian],
+    [labelShown, labelTier, labelProto, labelBias, labelText, selected?.id, labelMedian],
   );
 
   // 3D extruded neighborhood model: height + color both encode annual est. tax
@@ -1489,6 +1538,14 @@ export default function App() {
             </button>
             <button className={labelBias === 'savings' ? 'on' : ''} onClick={() => setLabelBias('savings')}>
               savings
+            </button>
+          </div>
+          <div className="lp-bias">
+            <button className={labelText === 'pct' ? 'on' : ''} onClick={() => setLabelText('pct')}>
+              %
+            </button>
+            <button className={labelText === 'usd' ? 'on' : ''} onClick={() => setLabelText('usd')}>
+              $
             </button>
           </div>
         </div>

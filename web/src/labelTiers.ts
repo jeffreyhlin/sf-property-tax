@@ -75,7 +75,25 @@ export function labelPriority(
   return Math.min(900, Math.round(Math.max(0, medianRatio - r) * 1200));
 }
 
-export const fmtPct = (r: number | null) => (r == null ? '—' : `${Math.round(r * 100)}%`);
+export const fmtPct = (r: number | null) => (r == null ? '' : `${Math.round(r * 100)}%`);
+
+/**
+ * Compact dollars for a pill. At parcel tier this is one household's annual
+ * amount; at block and neighbourhood tier it is a sum, which is a different
+ * kind of quantity even though the units match. Worth keeping in mind when
+ * reading a block's $4.1M next to a house's $65k.
+ */
+export function fmtUsd(d: number): string {
+  if (!Number.isFinite(d) || d <= 0) return '';
+  if (d >= 1e9) return `$${(d / 1e9).toFixed(1)}B`;
+  if (d >= 1e6) return `$${(d / 1e6).toFixed(d >= 1e7 ? 0 : 1)}M`;
+  if (d >= 1e3) return `$${Math.round(d / 1e3)}k`;
+  // Everything else is thousands, so a bare "$131" sitting next to "$19k" reads
+  // as 131 thousand at a glance. Collapse the small tail instead.
+  return '<$1k';
+}
+
+export type LabelText = 'pct' | 'usd';
 
 /** Roll parcels up to their assessor block. APN 2765001 -> block 2765. */
 export function blockOf(apn: string): string {
