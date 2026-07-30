@@ -9,7 +9,9 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test:labels": "node --experimental-strip-types src/labelTiers.test.mjs",
-    "lint:copy": "node src/copygrep.mjs"
+    "lint:copy": "node src/copygrep.mjs",
+    "gen:seo": "node --experimental-strip-types scripts/gen-seo.mjs",
+    "prebuild": "npm run gen:seo"
   },
   "dependencies": {
     "deck.gl": "^9.3.6",

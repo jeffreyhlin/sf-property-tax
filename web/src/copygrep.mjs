@@ -1,4 +1,9 @@
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+// resolve sources relative to this file, so the script works from any cwd
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 // Patterns from the house style guide plus the no-ai-slop list. Each is a
 // construction, not a word ban: the point is to look at every hit, not to
@@ -20,7 +25,7 @@ const RULES = [
 
 // pull prose out of the sources: JSX text nodes and prose-looking literals
 function harvest(file) {
-  const src = fs.readFileSync(file, 'utf8');
+  const src = fs.readFileSync(join(HERE, file), 'utf8');
   const out = [];
   const push = (line, text) => {
     const t = text.replace(/\s+/g, ' ').trim();
@@ -41,7 +46,7 @@ function harvest(file) {
 
 const files = ['App.tsx', 'faq.ts', 'SankeyView.tsx'];
 let copy = files.flatMap(harvest);
-const nar = JSON.parse(fs.readFileSync('narration.json', 'utf8'));
+const nar = JSON.parse(fs.readFileSync(join(HERE, 'narration.json'), 'utf8'));
 copy = copy.concat(nar.beats.map((b) => ({ file: 'narration.json', line: b.id, text: b.text })));
 
 console.log(`scanned ${files.join(', ')}, narration.json`);
