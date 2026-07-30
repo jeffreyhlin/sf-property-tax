@@ -1688,11 +1688,11 @@ export default function App() {
         <div className="legend-title">how far below market it's taxed</div>
         <div className="legend-bar" />
         <div className="legend-ends">
-          <span>far below (deep subsidy)</span>
+          <span>taxed far below</span>
           <span>near market</span>
         </div>
-        {!showParcels && <div className="legend-note">3D height = total est. savings · color = subsidy depth · click to zoom in</div>}
-        {showParcels && <div className="legend-note">gray = no market estimate</div>}
+        {!showParcels && <div className="legend-note">Taller blocks keep more each year. Darker is taxed further below market. Click one to zoom in.</div>}
+        {showParcels && <div className="legend-note">Gray parcels have no market estimate.</div>}
         {showParcels && transfersOnly && (
           <div className="legend-note">
             showing only parcels that changed hands since 2007
@@ -1913,7 +1913,7 @@ export default function App() {
 
           <span
             className={`badge badge-${sel.transferType}`}
-            title="Inferred from assessment behavior in the tax rolls, not from recorded deeds. A transfer with no reassessment to market matches parent-child / grandparent-grandchild (Prop 58/193/19), spousal, and trust transfers."
+            title="Inferred from the tax roll, not from a deed. We can see that the value was never reassessed. We cannot see why. Parent-child and grandparent-grandchild transfers (Prop 58/193/19), spousal transfers and trust transfers all look the same from here."
           >
             {TRANSFER_LABEL[sel.transferType]}
             {sel.transferYear ? ` · ${sel.transferYear}` : ''}
@@ -1943,7 +1943,7 @@ export default function App() {
               title="Est. worth is our own estimate, not a third party: the median price per square foot of similar recently-sold properties in this neighborhood, times this building's size. Typically within ~18% of real sale prices."
             >
               Taxed as if worth <b>{fmt$k(sel.assessed)}</b>, but we estimate it's really worth about{' '}
-              <b>{fmt$k(sel.estMarket)}</b> ⓘ — so the yearly tax is <b>{fmt$k(sel.taxEst)}</b>, not the{' '}
+              <b>{fmt$k(sel.estMarket)}</b> ⓘ. So the yearly tax is <b>{fmt$k(sel.taxEst)}</b>, not the{' '}
               <b>{fmt$k(Math.round(sel.estMarket * (meta?.taxRate ?? 0.0118)))}</b> a new buyer would owe.
             </p>
           )}
@@ -2027,7 +2027,7 @@ export default function App() {
                     {records.demo ? (
                       <p className="rec-demo">
                         Sample rows from our inferred transfers. Real deed types, names, and transfer tax
-                        come from the §408.1 list (see docs) or the recorder — look this parcel up yourself:
+                        come from the §408.1 list (see docs) or the recorder. Look this parcel up yourself:
                       </p>
                     ) : (
                       <p className="est-source">
@@ -2077,7 +2077,7 @@ export default function App() {
                       }}
                     >
                       ↗ Verify block {blockLot(sel.id).block} lot {blockLot(sel.id).lot} in the official records
-                      <em> — block-lot copied; paste it into the APN search</em>
+                      <em>Block-lot copied. Paste it into the APN search.</em>
                     </a>
                   </>
                 )}

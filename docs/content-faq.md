@@ -52,4 +52,4 @@ Yes. Assessment rolls are public records under California law, and DataSF publis
 
 ## Is it fair to publish this?
 
-People disagree, and that's part of why the site exists. One view: these are public records about a tax system that shifts billions between neighbors, and you can't debate a policy you can't see. Another view: individual households didn't design Prop 13 and shouldn't be singled out for using it legally. We try to present the numbers neutrally, label inferences as inferences, and give individuals a way to opt out.
+People disagree, and that's part of why the site exists. One view: these are public records about a tax system that shifts billions between neighbors, and you can't debate a policy you can't see. Another view: individual households didn't design Prop 13 and shouldn't be singled out for using it legally. We try to present the numbers neutrally, label inferences as inferences, and fix anything that turns out to be factually wrong.

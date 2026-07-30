@@ -7,7 +7,7 @@ export const FAQ: FaqItem[] = [
   },
   {
     "q": "What does \"transferred without reassessment\" mean?",
-    "a": "The tax roll shows the property changed hands, but its taxable value never reset to market. Whatever the reason, the old low basis carried forward, so the new owner inherited the discount. Several things cause this. Some are family, spousal, or trust transfers, which California law exempts from reassessment. Others are ordinary sales where the price simply came in at or below the existing assessment, foreclosures, transfers between business entities, or affordable-housing partnerships whose assessments are restricted by regulation. The label states the pattern, not the reason. Open a parcel to see the actual recorded deeds and parties."
+    "a": "The tax roll shows the property changed hands, but its taxable value never reset to market. Whatever the reason, the old low taxable value carried forward, so the new owner inherited the discount. Several things cause this. Some are family, spousal, or trust transfers, which California law exempts from reassessment. Others are ordinary sales where the price simply came in at or below the existing assessment, foreclosures, transfers between business entities, or affordable-housing partnerships whose assessments are restricted by regulation. The label states the pattern, not the reason. Open a parcel to see the actual recorded deeds and parties."
   },
   {
     "q": "How do you figure that out without seeing the deeds?",
@@ -51,6 +51,6 @@ export const FAQ: FaqItem[] = [
   },
   {
     "q": "Is it fair to publish this?",
-    "a": "People disagree, and that's part of why the site exists. One view: these are public records about a tax system that shifts billions between neighbors, and you can't debate a policy you can't see. Another view: individual households didn't design Prop 13 and shouldn't be singled out for using it legally. We try to present the numbers neutrally, label inferences as inferences, and give individuals a way to opt out."
+    "a": "People disagree, and that's part of why the site exists. One view: these are public records about a tax system that shifts billions between neighbors, and you can't debate a policy you can't see. Another view: individual households didn't design Prop 13 and shouldn't be singled out for using it legally. We try to present the numbers neutrally, label inferences as inferences, and fix anything that turns out to be factually wrong."
   }
 ];

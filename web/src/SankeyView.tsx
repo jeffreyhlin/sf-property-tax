@@ -1,5 +1,5 @@
 // "Breakdown" view: a Sankey of where the total est. annual tax gap flows —
-// total -> property type -> how the low tax basis arose. Pure SVG, no lib.
+// total -> property type -> how the low taxable value arose. Pure SVG, no lib.
 
 type SankeyFlow = { cls: 'sfh' | 'multi'; origin: 'prehold' | 'market' | 'relational'; savings: number; count: number };
 
@@ -12,9 +12,9 @@ const ORIGIN_NAME: Record<string, string> = {
   relational: 'Family or trust transfer',
 };
 const ORIGIN_NOTE: Record<string, string> = {
-  prehold: 'Long-time owners whose low tax basis predates our data. The bulk of the gap.',
+  prehold: 'Long-time owners whose low taxable value predates our data. The bulk of the gap.',
   market: 'Bought at market since 2007 and holding as values kept climbing.',
-  relational: 'Passed within a family or into a trust without resetting the tax. A small slice, and a floor — pre-2007 transfers are invisible to us.',
+  relational: 'Passed within a family or into a trust without resetting the tax. A small slice, and a floor, since pre-2007 transfers are invisible to us.',
 };
 const ORDER = ['prehold', 'market', 'relational'] as const;
 
@@ -144,7 +144,7 @@ export function SankeyView({
         <h2>Where the ${(total / 1e9).toFixed(1)} billion a year goes</h2>
         <p>
           Every dollar of estimated annual property-tax savings, traced from the citywide total, to the kind
-          of property, to how that low tax basis came to be. Commercial property is excluded (no reliable
+          of property, to how that low taxable value came to be. Commercial property is excluded (no reliable
           market estimate).
         </p>
       </div>}
