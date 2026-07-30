@@ -201,6 +201,52 @@ function pillSprite(text: string, on: boolean): PillSprite {
   return sprite;
 }
 
+// ---- recent searches -------------------------------------------------------
+// Stored locally so returning to the site keeps your places. Nothing leaves
+// the browser; six entries, newest first, deduped by parcel.
+type RecentSearch = { id: string; addr: string; nbhd: string; x: number | null; y: number | null };
+const RECENTS_KEY = 'sfptg-recents-v1';
+function readRecents(): RecentSearch[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? '[]');
+    return Array.isArray(v) ? v.slice(0, 6) : [];
+  } catch {
+    return [];
+  }
+}
+function pushRecent(list: RecentSearch[], m: RecentSearch): RecentSearch[] {
+  const next = [m, ...list.filter((r) => r.id !== m.id)].slice(0, 6);
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+  } catch {
+    /* storage blocked; recents just do not persist */
+  }
+  return next;
+}
+
+/** Canonical share link, independent of whatever the current view is. */
+function shareUrl(hash: string): string {
+  return `${window.location.origin}/#${hash}`;
+}
+async function shareOrCopy(url: string, title: string): Promise<'shared' | 'copied' | 'failed'> {
+  // navigator.share reaches Messages and friends on phones; desktop browsers
+  // mostly lack it, where the clipboard is the useful behavior anyway.
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, url });
+      return 'shared';
+    } catch {
+      /* sheet dismissed; fall through to copy */
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    return 'copied';
+  } catch {
+    return 'failed';
+  }
+}
+
 const INITIAL_VIEW: MapViewState = {
   longitude: -122.4425,
   latitude: 37.758,
@@ -600,6 +646,10 @@ export default function App() {
   const [viewState, setViewState] = useState<MapViewState>(INITIAL_VIEW);
   const [selected, setSelected] = useState<ParcelProps | null>(null);
   const [query, setQuery] = useState('');
+  const [searchFocus, setSearchFocus] = useState(false);
+  const searchBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [recents, setRecents] = useState<RecentSearch[]>(() => readRecents());
+  const [shareNote, setShareNote] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>('explore');
   const [boardTab, setBoardTab] = useState<'relational' | 'all'>('relational');
   const [boardCls, setBoardCls] = useState<'sfh' | 'multi'>('sfh');
@@ -789,10 +839,11 @@ export default function App() {
       );
       if (!transfersOnly) parts.push('f=0');
       if (year != null) parts.push(`y=${year}`);
+      if (comparePicks.length >= 2) parts.push(`cmp=${comparePicks.join(',')}`);
       window.history.replaceState(null, '', '#' + parts.join('&'));
     }, 400);
     return () => clearTimeout(t);
-  }, [selected, viewState, transfersOnly, year]);
+  }, [selected, viewState, transfersOnly, year, comparePicks]);
 
   // Hydrate from the hash once search data is available.
   useEffect(() => {
@@ -810,6 +861,25 @@ export default function App() {
     if (params.get('f') === '0') setTransfersOnly(false);
     const y = params.get('y');
     if (y && Number.isFinite(Number(y))) setYear(Number(y));
+    const cmp = params.get('cmp');
+    if (cmp) {
+      const ids = cmp.split(',').map((x) => x.trim()).filter(Boolean).slice(0, MAX_COMPARE);
+      if (ids.length >= 2) {
+        setView('explore');
+        setCompareMode(true);
+        setComparePicks(ids);
+        setCompareOpen(true);
+        // the report reads parcels out of loaded chunks, so pull each one's
+        // neighborhood in rather than waiting for the viewport to find it
+        for (const id of ids) {
+          const i = searchIdx.id.indexOf(id);
+          if (i >= 0) {
+            const slug = slugByName.get(searchIdx.nbhds[searchIdx.nb[i]]);
+            if (slug) loadChunk(slug);
+          }
+        }
+      }
+    }
     const pid = params.get('p');
     if (pid) {
       const i = searchIdx.id.indexOf(pid);
@@ -1570,13 +1640,39 @@ export default function App() {
             placeholder="Search address… (e.g. 500 CHURCH)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => {
+              // a refocus inside the blur delay must beat the pending timer,
+              // or the recents list flashes closed under the cursor
+              if (searchBlurTimer.current) clearTimeout(searchBlurTimer.current);
+              setSearchFocus(true);
+            }}
+            // delayed so a click on a result lands before the list unmounts
+            onBlur={() => {
+              searchBlurTimer.current = setTimeout(() => setSearchFocus(false), 150);
+            }}
           />
-          {matches.length > 0 && (
+          {(matches.length > 0 || (searchFocus && query.trim().length < 3 && recents.length > 0)) && (
             <ul className="results">
-              {matches.map((m) => (
+              {query.trim().length < 3 && recents.length > 0 && (
+                <li className="res-head" aria-hidden>
+                  Recent
+                  <button
+                    className="res-clear"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setRecents([]);
+                      try { localStorage.removeItem(RECENTS_KEY); } catch { /* fine */ }
+                    }}
+                  >
+                    clear
+                  </button>
+                </li>
+              )}
+              {(query.trim().length >= 3 ? matches : recents).map((m) => (
                 <li
                   key={m.id}
                   onClick={() => {
+                    setRecents((r) => pushRecent(r, m));
                     // While comparing, search adds to the set instead of
                     // opening the parcel. Still fly there so you see it land.
                     if (compareMode) {
@@ -1931,6 +2027,16 @@ export default function App() {
             ×
           </button>
           <h2>{sel.addr}</h2>
+          <button
+            className="share-link"
+            onClick={async () => {
+              const r = await shareOrCopy(shareUrl(`p=${sel.id}`), `${sel.addr} on SF Property Tax Gap`);
+              setShareNote(r === 'copied' ? 'Link copied' : r === 'failed' ? 'Could not copy' : null);
+              setTimeout(() => setShareNote(null), 2000);
+            }}
+          >
+            {shareNote ?? 'Share link'}
+          </button>
           <div className="muted">
             {sel.nbhd} · {sel.use}
             {sel.built ? ` · built ${sel.built}` : ''}
@@ -2619,6 +2725,7 @@ function CompareReport({
   const gap = (top.savings ?? 0) - (bot.savings ?? 0);
   const sameStreet = new Set(items.map((i) => i.street)).size === 1 && !!top.street;
 
+  const [shareState, setShareState] = useState<string | null>(null);
   const basisOf = (p: ParcelProps) => p.transferYear ?? p.basisYear ?? null;
   // One clause covering both the year and the cause, so a parcel with no
   // recorded reset does not read as "set in 2007 by ownership since before 2007".
@@ -2696,6 +2803,29 @@ function CompareReport({
           <div className="cmp-meta">
             Comparison report · {items.length} parcels
             {pending > 0 && ` · ${pending} still loading`}
+            <span className="cmp-share">
+              <button
+                onClick={async () => {
+                  const r = await shareOrCopy(
+                    shareUrl(`cmp=${ids.join(',')}`),
+                    `${top.addr} vs ${bot.addr}: the property tax gap`,
+                  );
+                  setShareState(r === 'copied' ? 'Link copied' : r === 'failed' ? 'Could not copy' : null);
+                  setTimeout(() => setShareState(null), 2000);
+                }}
+              >
+                {shareState ?? 'Share'}
+              </button>
+              <a
+                href={`mailto:?subject=${encodeURIComponent(`${top.addr} vs ${bot.addr}: the property tax gap`)}&body=${encodeURIComponent(
+                  `${top.addr} keeps ${fmt$(top.savings ?? 0)} a year that a new buyer would owe. ` +
+                  `${bot.addr} keeps ${fmt$(bot.savings ?? 0)}.\n\nSee the full comparison, with the recorded deeds:\n` +
+                  shareUrl(`cmp=${ids.join(',')}`),
+                )}`}
+              >
+                Email
+              </a>
+            </span>
           </div>
           <p className="cmp-lede">
             <b>{top.addr}</b> keeps <b>{fmt$(top.savings ?? 0)} a year</b> that a new buyer would owe.{' '}

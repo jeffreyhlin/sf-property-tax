@@ -2304,3 +2304,54 @@ body:has(.brand-v3) { font-family: var(--font-ui); }
 }
 .panel-explain b { color: var(--ink-strong); font-weight: 700; }
 .brand-v3 .panel-explain { border-left-color: var(--accent); }
+
+/* ---- recent searches ---- */
+.results .res-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: default;
+}
+.results .res-head:hover { background: none; }
+.results .res-clear {
+  border: 0;
+  background: none;
+  padding: 0;
+  min-height: 0;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+  cursor: pointer;
+}
+.results .res-clear:hover { color: var(--accent); }
+
+/* ---- share affordances ---- */
+.share-link {
+  display: inline-block;
+  margin: 2px 0 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+.cmp-share {
+  float: right;
+  display: inline-flex;
+  gap: 10px;
+  align-items: baseline;
+}
+.cmp-share button {
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+.cmp-share a {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
