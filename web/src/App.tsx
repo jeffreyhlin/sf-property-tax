@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DeckGL from '@deck.gl/react';
-import { GeoJsonLayer, TextLayer } from '@deck.gl/layers';
+import { GeoJsonLayer, IconLayer } from '@deck.gl/layers';
 import { CollisionFilterExtension } from '@deck.gl/extensions';
 import {
   FlyToInterpolator,
@@ -152,6 +152,53 @@ function demoRecords(sel: ParcelProps): DeedRecord[] {
       const d = kindToDoc[kind] ?? { docType: 'Deed', tax: null };
       return { date: `${yr}-01-01`, docType: d.docType, transferTax: d.tax, grantor: '—', grantee: '—' };
     });
+}
+
+// ---- map label pills -------------------------------------------------------
+// TextLayer's background is a plain quad with no corner radius, so the price
+// labels rendered as rectangles. Each label is drawn once to a small canvas as
+// a proper pill and shown through an IconLayer; the cache is keyed by text and
+// state, and the culled label set tops out around 224, so this stays cheap.
+const PILL_H = 22; // CSS px on screen; sprites are drawn at 2x for retina
+type PillSprite = { url: string; width: number; height: number };
+const pillCache = new globalThis.Map<string, PillSprite>();
+
+function pillSprite(text: string, on: boolean): PillSprite {
+  const key = (on ? 's:' : 'n:') + text;
+  const hit = pillCache.get(key);
+  if (hit) return hit;
+  const S = 2;
+  const padX = 8;
+  const h = PILL_H;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  const font = `600 ${12 * S}px "Avenir Next", Avenir, -apple-system, system-ui, sans-serif`;
+  ctx.font = font;
+  const tw = Math.ceil(ctx.measureText(text).width / S);
+  const w = tw + padX * 2;
+  canvas.width = w * S;
+  canvas.height = h * S;
+  ctx.scale(S, S);
+  ctx.font = `600 12px "Avenir Next", Avenir, -apple-system, system-ui, sans-serif`;
+  const r = h / 2 - 0.5;
+  ctx.beginPath();
+  ctx.roundRect(0.75, 0.75, w - 1.5, h - 1.5, r);
+  ctx.fillStyle = on
+    ? (BRAND_V3 ? '#1f1e1b' : '#b25007')
+    : (BRAND_V3 ? 'rgba(250,249,246,0.95)' : 'rgba(255,253,248,0.95)');
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = on
+    ? (BRAND_V3 ? '#1f1e1b' : '#b25007')
+    : (BRAND_V3 ? '#c8c5bb' : '#cdc3ad');
+  ctx.stroke();
+  ctx.fillStyle = on ? (BRAND_V3 ? '#faf9f6' : '#fffdf8') : (BRAND_V3 ? '#1f1e1b' : '#2c2418');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h / 2 + 0.5);
+  const sprite = { url: canvas.toDataURL(), width: w * S, height: h * S };
+  pillCache.set(key, sprite);
+  return sprite;
 }
 
 const INITIAL_VIEW: MapViewState = {
@@ -1312,36 +1359,41 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labelData, viewportBounds, viewKey, mapSize, chromeRects, labelProto, labelBias, selected?.id, labelMedian]);
 
+  const labelText4 = useCallback(
+    (d: MapLabel) => (labelText === 'usd' ? fmtUsd(d.dollars) : fmtPct(d.ratio)),
+    [labelText],
+  );
+
   const labelLayer = useMemo(
     () =>
-      new TextLayer<MapLabel>({
+      new IconLayer<MapLabel>({
         id: `labels-${labelTier}`,
-        data: labelShown,
+        // fmtUsd returns '' for zero-dollar labels; an empty sprite would still
+        // claim collision space, so drop them before the layer sees them
+        // fmtUsd returns '' for zero-dollar labels; an empty sprite would still
+        // claim collision space, so drop them before the layer sees them
+        data: labelShown.filter((d) => labelText4(d) !== ''),
         visible: labelProto,
         pickable: false,
         getPosition: (d) => d.position,
-        getText: (d) => (labelText === 'usd' ? fmtUsd(d.dollars) : fmtPct(d.ratio)),
-        getSize: labelTier === 'parcel' ? 12 : labelTier === 'block' ? 13 : 15,
+        getIcon: (d) => {
+          const t = labelText4(d);
+          const s = pillSprite(t, d.key === selected?.id);
+          return { url: s.url, width: s.width, height: s.height, id: (d.key === selected?.id ? 's:' : 'n:') + t };
+        },
+        onError: (err: Error) => console.error('[labels] IconLayer error:', err),
+        getSize: PILL_H,
         sizeUnits: 'pixels',
-        getColor: [31, 30, 27, 255],
-        background: true,
-        getBackgroundColor: [250, 249, 246, 235],
-        backgroundPadding: [6, 3, 6, 3],
-        getBorderColor: [200, 197, 187, 255],
-        getBorderWidth: 1,
-        fontFamily: 'Avenir Next, -apple-system, system-ui, sans-serif',
-        fontWeight: 600,
-        characterSet: '0123456789%$kMB.,',
-        extensions: [new CollisionFilterExtension()],
-        // The neighbourhood model is extruded, so ground-level text ends up
-        // inside the geometry. Drawing labels without depth testing floats them
+        // The neighbourhood model is extruded, so ground-level sprites end up
+        // inside the geometry. Drawing without depth testing floats them
         // over the model instead of being buried by it.
         parameters: { depthCompare: 'always' },
         billboard: true,
         updateTriggers: {
           getCollisionPriority: [labelBias, selected?.id, labelMedian],
-          getText: [labelText],
+          getIcon: [labelText, selected?.id],
         },
+        extensions: [new CollisionFilterExtension()],
         ...({
           collisionGroup: 'labels',
           // pad the hit box so survivors are not drawn shoulder to shoulder
@@ -1350,7 +1402,7 @@ export default function App() {
             labelPriority(d, labelBias, selected?.id ?? null, labelMedian),
         } as object),
       }),
-    [labelShown, labelTier, labelProto, labelBias, labelText, selected?.id, labelMedian],
+    [labelShown, labelTier, labelProto, labelBias, labelText4, labelText, selected?.id, labelMedian],
   );
 
   // 3D extruded neighborhood model: height + color both encode annual est. tax
