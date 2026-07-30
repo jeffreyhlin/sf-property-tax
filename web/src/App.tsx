@@ -342,19 +342,38 @@ const fmt$k = (n: number) =>
       : '$' + Math.round(n / 1000) + 'k';
 
 // ratio 1 = assessed at market (pastel yellow) -> ratio ~0 = deep subsidy (burnt orange)
+const RAMP_DEFAULT: [number, number, number][] = [
+  [252, 240, 197],
+  [247, 210, 120],
+  [238, 166, 72],
+  [214, 116, 32],
+  [178, 80, 7],
+];
+// v3: the encoding is unchanged, only the hue. Keeping the same lightness steps
+// means the map still reads as a heat map rather than a flat wash.
+const RAMP_V3: [number, number, number][] = [
+  [247, 244, 238],
+  [226, 201, 194],
+  [193, 145, 140],
+  [156, 88, 96],
+  [110, 38, 56],
+];
+// Read at module scope: it is a URL flag that cannot change during a session,
+// and doing it in an effect meant the first paint used the wrong ramp.
+const BRAND_V3 =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('brand') === 'v3';
+const activeRamp = BRAND_V3 ? RAMP_V3 : RAMP_DEFAULT;
+if (BRAND_V3 && typeof document !== 'undefined') {
+  document.documentElement.classList.add('brand-v3');
+}
+
 function ratioColor(ratio: number | null, relational: boolean): [number, number, number, number] {
   if (ratio == null) return [213, 209, 199, 150];
   // gamma 1.5 spreads the palette across the real distribution (median ratio
   // ~0.43): near-market homes read pale, only genuine deep-subsidy homes go dark
   const lin = Math.max(0, Math.min(1, (1 - ratio) / 0.9));
   const t = Math.pow(lin, 1.5);
-  const stops: [number, number, number][] = [
-    [252, 240, 197],
-    [247, 210, 120],
-    [238, 166, 72],
-    [214, 116, 32],
-    [178, 80, 7],
-  ];
+  const stops = activeRamp;
   const x = t * (stops.length - 1);
   const i = Math.min(Math.floor(x), stops.length - 2);
   const f = x - i;
