@@ -18,6 +18,10 @@
       "text": "One family bought decades ago. Their neighbor bought last year. For nearly identical houses, the newer owner can owe ten times more property tax. This is a map of that gap across every parcel in San Francisco."
     },
     {
+      "id": "your-street",
+      "text": "Type your address, and the map will take you there. The rest of this story reads differently when it is your own block on the screen."
+    },
+    {
       "id": "how-prop-13-works",
       "text": "Since 1978, California taxes a home on its purchase price, rising at most two percent a year, until it sells again. Prices have far outrun two percent, so the longer you hold, the wider the gap."
     },
@@ -28,10 +32,6 @@
     {
       "id": "compounding",
       "text": "Fifteen years ago the market sat closer to what people were taxed on. As values climbed and owners stayed put, the yearly savings grew with them."
-    },
-    {
-      "id": "where-it-sits",
-      "text": "Three quarters of the gap belongs to owners who have simply held since before 2007. Long ownership is the subsidy. A smaller slice traces to transfers that avoided a reassessment."
     },
     {
       "id": "one-house",

@@ -2358,3 +2358,92 @@ body:has(.brand-v3) { font-family: var(--font-ui); }
   font-size: 11px;
   color: var(--ink-soft);
 }
+
+/* ---- the story's address beat ---- */
+.story-ask { margin-top: 14px; max-width: 30rem; }
+.story-ask input {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 16px; /* stops iOS zoom-on-focus */
+  border: 1px solid var(--rule-firm);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink);
+  outline: none;
+}
+.story-ask input:focus { border-color: var(--accent); }
+.story-ask-results {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 4px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.story-ask-results li { padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13.5px; }
+.story-ask-results li span { color: var(--muted); margin-left: 6px; }
+.story-ask-results li:hover { background: var(--tint-warm); }
+.story-ask-readout {
+  margin: 12px 0 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  border-left: 2px solid var(--accent);
+  padding-left: 12px;
+}
+.about-sankey { margin: 6px 0 16px; overflow-x: auto; }
+.about-sankey { margin: 4px 0 18px; overflow-x: auto; }
+.about-sankey-note { font-size: 12.5px; color: var(--muted); margin: 4px 0 10px; max-width: 34rem; }
+
+/* ---- explore split: results left, map right (desktop only) ---- */
+.explore-list {
+  position: absolute;
+  /* clears the topbar even when the title wraps to two lines */
+  top: 96px;
+  left: 14px;
+  bottom: 80px;
+  width: 330px;
+  z-index: 20;
+  display: none;
+  flex-direction: column;
+  background: var(--paper-95);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  overflow: hidden;
+}
+@media (min-width: 1000px) {
+  .explore-list { display: flex; }
+  /* the map keeps its own center: shift the pane so the rail does not sit on
+     top of the city, mirroring how the story already offsets it */
+  .app.view-explore .map-pane { left: 344px; }
+  /* the legend shares the rail's corner; move it out from underneath */
+  .app.view-explore .legend { left: 358px; }
+}
+.explore-list .xl-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 14px 9px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-strong);
+  border-bottom: 1px solid var(--rule-pale);
+}
+.explore-list .xl-head span { font-weight: 400; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.explore-list ul { list-style: none; margin: 0; padding: 6px; overflow-y: auto; }
+.explore-list li {
+  padding: 9px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.explore-list li:hover { background: var(--tint); }
+.explore-list li.on { border-color: var(--accent); background: var(--accent-wash); }
+.xl-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.xl-top b { font-size: 12.5px; color: var(--ink-strong); }
+.xl-kept { font-size: 12.5px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.brand-v3 .xl-kept { font-family: var(--font-display); font-size: 14px; }
+.xl-bar { height: 4px; border-radius: 2px; background: var(--rule-soft); margin: 6px 0 4px; overflow: hidden; }
+.xl-bar span { display: block; height: 100%; background: var(--muted-soft); }
+.xl-sub { font-size: 11px; color: var(--muted); }

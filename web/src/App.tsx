@@ -1108,7 +1108,7 @@ export default function App() {
   useEffect(() => {
     if (!labelsOn) return;
     const SELECTORS =
-      '.topbar, .legend, .dock, .panel, .labelproto, .year-slider, .cmp-tray, .board, .rankings, .about-overlay';
+      '.topbar, .legend, .dock, .panel, .labelproto, .year-slider, .cmp-tray, .board, .rankings, .about-overlay, .explore-list';
     let raf = 0;
     const measure = () => {
       const pane = document.querySelector('.map-pane') as HTMLElement | null;
@@ -1385,6 +1385,36 @@ export default function App() {
   // zooming into a block re-picks winners from that block rather than from
   // every chunk in memory.
   const labelStats = useRef({ all: 0, inView: 0, afterChrome: 0, rects: 0 });
+  // Left-rail results for the explore split. Parcels once their chunks are in
+  // and inside the viewport, sorted by dollars kept; neighborhoods before that.
+  const exploreRows = useMemo(() => {
+    if (view !== 'explore') return { kind: 'none' as const, parcels: [], nbhds: [] };
+    void chunkVersion;
+    const rows: Array<{ props: ParcelProps; lon: number; lat: number }> = [];
+    if (viewportBounds) {
+      const [w, sth, e, n] = viewportBounds;
+      for (const [, entry] of chunksRef.current) {
+        for (const f of chunkData(entry, transfersOnly, typeFilter)) {
+          const g = f.geometry as { type: string; coordinates: number[][][] | number[][][][] };
+          const first =
+            g.type === 'MultiPolygon'
+              ? (g.coordinates as number[][][][])[0]?.[0]?.[0]
+              : (g.coordinates as number[][][])[0]?.[0];
+          if (!first) continue;
+          if (first[0] < w || first[0] > e || first[1] < sth || first[1] > n) continue;
+          rows.push({ props: f.properties, lon: first[0], lat: first[1] });
+        }
+      }
+    }
+    if (rows.length) {
+      rows.sort((a, b) => (b.props.savings ?? 0) - (a.props.savings ?? 0));
+      return { kind: 'parcels' as const, parcels: rows.slice(0, 40), nbhds: [] };
+    }
+    const nb = [...(meta?.neighborhoods ?? [])].sort((a, b) => b.totalSavings - a.totalSavings);
+    return { kind: 'nbhds' as const, parcels: [], nbhds: nb };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, chunkVersion, viewportBounds, transfersOnly, typeFilter, meta]);
+
   const labelShown = useMemo(() => {
     let pool = labelData;
     labelStats.current.all = pool.length;
@@ -1614,6 +1644,22 @@ export default function App() {
           onSetYear={setYear}
           onSetExtrude={setExtrude}
           onNarrate={speakBeat}
+          onFindAddress={(q) => {
+            const needle = q.trim().toUpperCase();
+            if (needle.length < 3 || !searchIdx) return [];
+            const out: Array<{ id: string; addr: string; nbhd: string; x: number | null; y: number | null }> = [];
+            for (let i = 0; i < searchIdx.addr.length && out.length < 5; i++) {
+              if (searchIdx.addr[i].includes(needle)) {
+                out.push({ id: searchIdx.id[i], addr: searchIdx.addr[i], nbhd: searchIdx.nbhds[searchIdx.nb[i]], x: searchIdx.x[i], y: searchIdx.y[i] });
+              }
+            }
+            return out;
+          }}
+          onPickAddress={(m) => {
+            setRecents((r) => pushRecent(r, m));
+            flyToMatch(m);
+          }}
+          picked={selected}
           audioOn={audioOn}
           hasVoice={hasVoice}
           onToggleAudio={() => setAudioOn((v) => !v)}
@@ -1794,6 +1840,19 @@ export default function App() {
                 Support this project
               </a>
             )}
+            {meta && (
+              <>
+                <h2>Where the $2B sits</h2>
+                <p className="about-sankey-note">
+                  Three quarters of the gap belongs to owners who have held since before 2007.
+                  A smaller slice traces to transfers that changed hands without a reassessment.
+                </p>
+                <div className="about-sankey">
+                  <SankeyView flows={meta.sankey} compact />
+                </div>
+              </>
+            )}
+
             <h2>FAQ</h2>
             {FAQ.map((item) => (
               <details key={item.q}>
@@ -1841,6 +1900,70 @@ export default function App() {
           </div>
         </div>
       )}
+      {view === 'explore' && !embed && (
+        <aside className="explore-list" aria-label="What is on the map">
+          {exploreRows.kind === 'parcels' ? (
+            <>
+              <div className="xl-head">
+                Biggest gaps in view
+                <span>{exploreRows.parcels.length < 40 ? exploreRows.parcels.length : '40'} of what is loaded</span>
+              </div>
+              <ul>
+                {exploreRows.parcels.map(({ props: r }) => (
+                  <li
+                    key={r.id}
+                    className={selected?.id === r.id ? 'on' : undefined}
+                    onClick={() => flyToMatch({ id: r.id, nbhd: r.nbhd, x: null, y: null })}
+                  >
+                    <div className="xl-top">
+                      <b>{r.addr}</b>
+                      <span className="xl-kept">{fmt$(r.savings ?? 0)}</span>
+                    </div>
+                    <div className="xl-bar"><span style={{ width: `${Math.round((r.ratio ?? 1) * 100)}%` }} /></div>
+                    <div className="xl-sub">
+                      taxed on {r.ratio != null ? `${Math.round(r.ratio * 100)}%` : '—'} of value
+                      {r.transferType === 'relational' ? ' · transferred without reassessment' : ''}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <>
+              <div className="xl-head">
+                Neighborhoods by dollars kept
+                <span>zoom in for parcels</span>
+              </div>
+              <ul>
+                {exploreRows.nbhds.map((n) => (
+                  <li
+                    key={n.slug}
+                    onClick={() => {
+                      if (!n.center) return;
+                      loadChunk(n.slug);
+                      setViewState((v) => ({
+                        ...v,
+                        longitude: n.center![0],
+                        latitude: n.center![1],
+                        zoom: 14.2,
+                        transitionDuration: 900,
+                        transitionInterpolator: new FlyToInterpolator(),
+                      }));
+                    }}
+                  >
+                    <div className="xl-top">
+                      <b>{n.name}</b>
+                      <span className="xl-kept">{fmt$k(n.totalSavings)}/yr</span>
+                    </div>
+                    <div className="xl-sub">{n.parcels.toLocaleString()} homes</div>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </aside>
+      )}
+
       {view === 'explore' && (
       <div className="legend">
         <div className="legend-title">how far below market it's taxed</div>
@@ -2453,7 +2576,7 @@ type StoryStep = {
   transfersOnly?: boolean;
   year?: number | null;
   play?: boolean;   // auto-animate 2007 -> latest with a live metric
-  sankey?: boolean; // render the breakdown inline, as a chapter
+  ask?: boolean;    // embed the address search: the reader enters here
   skip?: boolean;   // offer the escape hatch under this step's copy
   extrude?: boolean; // raise the 3D neighborhood model for this beat
   voice?: string;   // id in narration.json; what the audio guide reads here
@@ -2466,6 +2589,15 @@ const STORY_STEPS: StoryStep[] = [
     voice: 'opening',
     body: 'One family bought decades ago. Their neighbor bought last year. For nearly identical houses, the newer owner can owe ten times more property tax. This is a map of that gap across all 207,000 parcels in San Francisco.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 11.4, pitch: 42, bearing: 0 },
+    skip: true,
+  },
+  {
+    kicker: 'Your street',
+    title: 'Start with your own block',
+    voice: 'your-street',
+    body: 'Type an address and the map takes you there. The rest of this story reads differently when it is your block on the screen.',
+    view: { longitude: -122.4425, latitude: 37.758, zoom: 11.8, pitch: 0, bearing: 0 },
+    ask: true,
     skip: true,
   },
   {
@@ -2494,14 +2626,6 @@ const STORY_STEPS: StoryStep[] = [
     play: true,
   },
   {
-    kicker: 'Where the $2B sits',
-    title: 'Mostly people who never left',
-    voice: 'where-it-sits',
-    body: 'Three quarters of the gap belongs to owners who have simply held since before 2007. Long ownership is the subsidy. A much smaller slice traces to transfers that changed hands without triggering a reassessment.',
-    view: { longitude: -122.4525, latitude: 37.752, zoom: 11.5, pitch: 35, bearing: 0 },
-    sankey: true,
-  },
-  {
     kicker: 'One house',
     title: '247 Lansdale Ave',
     voice: 'one-house',
@@ -2514,7 +2638,7 @@ const STORY_STEPS: StoryStep[] = [
     kicker: 'Your turn',
     title: 'Now look up your street',
     voice: 'your-turn',
-    body: 'The map is yours from here. Search an address, tap any parcel to see two decades of its taxes and every recorded deed, or turn on Compare to line up your block against a neighbor’s.',
+    body: 'The map is yours from here. Tap any parcel for two decades of its taxes and every recorded deed, or turn on Compare to line up your block against a neighbor’s.',
     view: { longitude: -122.4425, latitude: 37.758, zoom: 12, pitch: 40, bearing: 0 },
     transfersOnly: true,
   },
@@ -2532,6 +2656,9 @@ function StoryScroller({
   onSetExtrude,
   onExplore,
   onNarrate,
+  onFindAddress,
+  onPickAddress,
+  picked,
   audioOn,
   hasVoice,
   onToggleAudio,
@@ -2544,11 +2671,15 @@ function StoryScroller({
   onSetExtrude: (v: boolean) => void;
   onExplore: () => void;
   onNarrate: (voiceId: string) => void;
+  onFindAddress: (q: string) => Array<{ id: string; addr: string; nbhd: string; x: number | null; y: number | null }>;
+  onPickAddress: (m: { id: string; addr: string; nbhd: string; x: number | null; y: number | null }) => void;
+  picked: ParcelProps | null;
   audioOn: boolean;
   hasVoice: boolean;
   onToggleAudio: () => void;
 }) {
   const [active, setActive] = useState(0);
+  const [askQ, setAskQ] = useState('');
   const [playYear, setPlayYear] = useState<number | null>(null);
   const refs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -2649,9 +2780,37 @@ function StoryScroller({
               <div className="story2-kicker">{s.kicker}</div>
               <h2>{s.title}</h2>
               <p>{s.body}</p>
-              {s.sankey && (
-                <div className="story-sankey">
-                  <SankeyView flows={meta.sankey} compact />
+              {s.ask && (
+                <div className="story-ask">
+                  <input
+                    type="text"
+                    value={askQ}
+                    placeholder="Your address (e.g. 500 CHURCH ST)"
+                    onChange={(e) => setAskQ(e.target.value)}
+                    aria-label="Your address"
+                  />
+                  {askQ.trim().length >= 3 && (
+                    <ul className="story-ask-results">
+                      {onFindAddress(askQ).map((m) => (
+                        <li key={m.id} onClick={() => { onPickAddress(m); setAskQ(''); }}>
+                          <b>{m.addr}</b> <span>{m.nbhd}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {picked && (
+                    <p className="story-ask-readout">
+                      <b>{picked.addr}</b> is taxed on{' '}
+                      {picked.ratio != null ? `${Math.round(picked.ratio * 100)}%` : 'an unknown share'} of
+                      what it is worth
+                      {picked.savings ? (
+                        <>, and keeps <b>{fmt$(picked.savings)}</b> a year that a new buyer would owe.</>
+                      ) : (
+                        <>.</>
+                      )}{' '}
+                      Watch for it as the story continues.
+                    </p>
+                  )}
                 </div>
               )}
               {s.skip && (
