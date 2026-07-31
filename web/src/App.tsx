@@ -459,8 +459,10 @@ const RAMP_V3: [number, number, number][] = [
 ];
 // Read at module scope: it is a URL flag that cannot change during a session,
 // and doing it in an effect meant the first paint used the wrong ramp.
+// v3 is the default. ?brand=classic keeps the original look reachable for
+// comparison until we are sure nothing regressed.
 const BRAND_V3 =
-  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('brand') === 'v3';
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('brand') !== 'classic';
 const activeRamp = BRAND_V3 ? RAMP_V3 : RAMP_DEFAULT;
 if (BRAND_V3 && typeof document !== 'undefined') {
   document.documentElement.classList.add('brand-v3');
